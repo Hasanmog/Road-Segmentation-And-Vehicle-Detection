@@ -137,10 +137,11 @@ class CrossAttentionBlock(nn.Module):
 class MultiScaleBlock(nn.Module):
 
     def __init__(self, dim, patches, depth, num_heads, mlp_ratio, qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+                 drop_path=0, act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
 
         num_branches = len(dim)
+        drop_path = [0.1] * (sum(depth) + depth[-1])  
         self.num_branches = num_branches
         # different branch could have different embedding size, the first one is the base
         self.blocks = nn.ModuleList()
@@ -149,7 +150,7 @@ class MultiScaleBlock(nn.Module):
             for i in range(depth[d]):
                 tmp.append(
                     Block(dim=dim[d], num_heads=num_heads[d], mlp_ratio=mlp_ratio[d], qkv_bias=qkv_bias, 
-                          drop=drop, attn_drop=attn_drop, drop_path=drop_path[i], norm_layer=norm_layer))
+                          attn_drop=attn_drop, drop_path=drop_path[i], norm_layer=norm_layer))
             if len(tmp) != 0:
                 self.blocks.append(nn.Sequential(*tmp))
 
