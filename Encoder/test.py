@@ -1,23 +1,24 @@
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
 import matplotlib.pyplot as plt
-from full_encoder import MultiScaleFusion
 
-# === Load & Preprocess Image ===
+from full_encoder import MultiScaleFusion  
+
+
 img_path = "12.png"
 image = Image.open(img_path).convert("RGB")
 
 transform = transforms.Compose([
-    transforms.Resize((512, 512)),  # Ensure input matches model expectations
+    transforms.Resize((512, 512)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
 image_tensor = transform(image).unsqueeze(0)  # [1, 3, 512, 512]
 
-# === Initialize Full MultiScaleFusion Model ===
 ckpt_path = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/Encoder/img_encoder/weights/sam_vit_b_01ec64.pth"
 
 model = MultiScaleFusion(
@@ -31,57 +32,62 @@ model = MultiScaleFusion(
     num_heads=(4, 4),
     mlp_ratio=(4, 4)
 )
-
 model.eval()
 
-# === Check Trainable Params ===
-trainable_params = [name for name, p in model.named_parameters() if p.requires_grad]
-if trainable_params:
-    print("Trainable parameters:")
-    for name in trainable_params:
-        print(f"  - {name}")
-else:
-    print("✅ All model parameters are frozen.")
-
-# === Forward Pass ===
+# === Forward pass ===
 with torch.no_grad():
-    fused_features = model(image_tensor)  # List of two tensors, one per branch
+    fused_features = model(image_tensor)  # List of [B, N, C]
 
-# === Output Shapes ===
-for i, feat in enumerate(fused_features):
-    print(f"Fused Output {i} Shape: {feat.shape}")  # Should be [B, N_patches, C]
-
-# === Visualize Some Tokens (reshaped to feature maps) ===
 def visualize_tokens_as_feature_maps(tokens, title):
-    """
-    tokens: [B, N, C] (e.g. [1, 4095, 256])
-    Will auto-infer H and W from N (should be square)
-    """
     B, N, C = tokens.shape
     sqrt = int(N ** 0.5)
     if sqrt * sqrt != N:
-        print(f"⚠️ Cannot reshape {N} tokens into square (H, W) — skipping.")
+        print(f"Cannot reshape {N} tokens into square (H, W) — skipping.")
         return
 
     feat = tokens[0].transpose(0, 1).reshape(C, sqrt, sqrt)  # [C, H, W]
 
-    channels_to_plot = min(8, feat.shape[0])
+    channels_to_plot = min(10, feat.shape[0])
     fig, axes = plt.subplots(1, channels_to_plot, figsize=(15, 5))
     fig.suptitle(title)
 
     for i in range(channels_to_plot):
         ax = axes[i]
-        ax.imshow(feat[i].cpu(), cmap='plasma')
+        ax.imshow(feat[i].cpu(), cmap='plasma')  # Try 'inferno', 'magma', etc.
         ax.axis('off')
         ax.set_title(f'Channel {i}')
 
     plt.tight_layout()
     plt.show()
-    
-# Assume image size 512×512, patches 8×8 → 64×64, patches 16×16 → 32×32
+
+
 visualize_tokens_as_feature_maps(fused_features[0], "Fused Local Tokens")
 visualize_tokens_as_feature_maps(fused_features[1], "Fused Global Tokens")
 
 
+def overlay_on_image(feature_map, image_tensor, alpha=0.5, title="Overlayed Feature Map"):
+    feature_map_resized = F.interpolate(
+        feature_map.unsqueeze(0).unsqueeze(0),
+        size=(512, 512),
+        mode='bilinear'
+    )[0, 0]
+    feature_map_resized = (feature_map_resized - feature_map_resized.min()) / (feature_map_resized.max() - feature_map_resized.min())
+
+    img = image_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    img = (img - img.min()) / (img.max() - img.min())
+
+    plt.imshow(img)
+    plt.imshow(feature_map_resized.cpu(), cmap='inferno', alpha=alpha)
+    plt.axis('off')
+    plt.title(title)
+    plt.show()
+
+
+with torch.no_grad():
+    B, N, C = fused_features[0].shape
+    sqrt = int(N ** 0.5)
+    if sqrt * sqrt == N:
+        feat_map = fused_features[0][0, :, 0].reshape(sqrt, sqrt)  
+        overlay_on_image(feat_map, image_tensor, title="Overlay: Local Feature Channel 0")
 
 
