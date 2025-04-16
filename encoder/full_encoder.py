@@ -1,6 +1,6 @@
 import torch.nn as nn
-from img_encoder.img_encoder import Image_Encoders
-from cross_attention.cross_attn import CrossAttnBlock
+from encoder.img_encoder.img_encoder import Image_Encoders
+from encoder.cross_attention.cross_attn import CrossAttnBlock
 
 
 
