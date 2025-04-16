@@ -11,7 +11,7 @@ class MultiScaleFusion(nn.Module):
                  large_patch_size: int = 16,
                  backbone_freeze: bool = True , 
                  enc_ckpt_path: str = None , 
-                 dim: tuple = (256 , 256),  # 512 input img size
+                 dim: tuple = (256,256),  # 512 input img size
                  patches: tuple = None,
                  depth: tuple = (2 , 2),
                  num_heads: tuple = (4 , 4),

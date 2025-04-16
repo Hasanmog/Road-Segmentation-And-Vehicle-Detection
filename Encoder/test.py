@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from full_encoder import MultiScaleFusion  
 
-
+# === Load & Preprocess Image ===
 img_path = "12.png"
 image = Image.open(img_path).convert("RGB")
 
@@ -19,6 +19,7 @@ transform = transforms.Compose([
 ])
 image_tensor = transform(image).unsqueeze(0)  # [1, 3, 512, 512]
 
+# === Load Encoder ===
 ckpt_path = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/Encoder/img_encoder/weights/sam_vit_b_01ec64.pth"
 
 model = MultiScaleFusion(
@@ -27,67 +28,50 @@ model = MultiScaleFusion(
     large_patch_size=16,
     enc_ckpt_path=ckpt_path,
     backbone_freeze=True,
-    dim=(256, 256),
+    dim=(256,256),
     depth=(2, 2),
     num_heads=(4, 4),
     mlp_ratio=(4, 4)
 )
 model.eval()
 
-# === Forward pass ===
+# === Run Model ===
 with torch.no_grad():
     fused_features = model(image_tensor)  # List of [B, N, C]
 
-def visualize_tokens_as_feature_maps(tokens, title):
-    B, N, C = tokens.shape
-    sqrt = int(N ** 0.5)
-    if sqrt * sqrt != N:
-        print(f"Cannot reshape {N} tokens into square (H, W) — skipping.")
-        return
+# === Extract First Feature Map ===
+tokens = fused_features[0]  # Local tokens (for example)
+B, N, C = tokens.shape
+sqrt = int(N ** 0.5)
 
-    feat = tokens[0].transpose(0, 1).reshape(C, sqrt, sqrt)  # [C, H, W]
+if sqrt * sqrt == N:
+    # Reshape one channel into [H, W]
+    feat_map = tokens[0, :, 0].reshape(sqrt, sqrt)
 
-    channels_to_plot = min(10, feat.shape[0])
-    fig, axes = plt.subplots(1, channels_to_plot, figsize=(15, 5))
-    fig.suptitle(title)
+    # === Overlay Feature Map ===
+    def overlay_on_image(feature_map, image_tensor, alpha=0.5, title="Overlayed Feature Map"):
+        feature_map_resized = F.interpolate(
+            feature_map.unsqueeze(0).unsqueeze(0),
+            size=(512, 512),
+            mode='bilinear',
+            align_corners=True
+        )[0, 0]
+        feature_map_resized = (feature_map_resized - feature_map_resized.min()) / (feature_map_resized.max() - feature_map_resized.min())
 
-    for i in range(channels_to_plot):
-        ax = axes[i]
-        ax.imshow(feat[i].cpu(), cmap='plasma')  # Try 'inferno', 'magma', etc.
-        ax.axis('off')
-        ax.set_title(f'Channel {i}')
+        img = image_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+        img = (img - img.min()) / (img.max() - img.min())
 
-    plt.tight_layout()
-    plt.show()
+        plt.imshow(img)
+        plt.imshow(feature_map_resized.cpu(), cmap='inferno', alpha=alpha)
+        plt.axis('off')
+        plt.title(title)
+        plt.show()
 
+    overlay_on_image(feat_map, image_tensor, title="Overlay: Feature Channel 0")
 
-visualize_tokens_as_feature_maps(fused_features[0], "Fused Local Tokens")
-visualize_tokens_as_feature_maps(fused_features[1], "Fused Global Tokens")
-
-
-def overlay_on_image(feature_map, image_tensor, alpha=0.5, title="Overlayed Feature Map"):
-    feature_map_resized = F.interpolate(
-        feature_map.unsqueeze(0).unsqueeze(0),
-        size=(512, 512),
-        mode='bilinear'
-    )[0, 0]
-    feature_map_resized = (feature_map_resized - feature_map_resized.min()) / (feature_map_resized.max() - feature_map_resized.min())
-
-    img = image_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-    img = (img - img.min()) / (img.max() - img.min())
-
-    plt.imshow(img)
-    plt.imshow(feature_map_resized.cpu(), cmap='inferno', alpha=alpha)
-    plt.axis('off')
-    plt.title(title)
-    plt.show()
-
-
-with torch.no_grad():
-    B, N, C = fused_features[0].shape
-    sqrt = int(N ** 0.5)
-    if sqrt * sqrt == N:
-        feat_map = fused_features[0][0, :, 0].reshape(sqrt, sqrt)  
-        overlay_on_image(feat_map, image_tensor, title="Overlay: Local Feature Channel 0")
-
-
+    # === Print Feature Map Info ===
+    print(f"Feature Map Shape: {tokens.shape}")  # [B, N, C]
+    print(f"Feature Map Resolution: {sqrt}x{sqrt}")
+    print(f"Total Channels: {C}")
+else:
+    print("Cannot reshape feature map into a square for visualization.")
