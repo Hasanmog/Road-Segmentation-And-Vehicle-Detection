@@ -5,7 +5,7 @@ import matplotlib.patches as patches
 from PIL import Image
 import numpy as np
 
-from model import SegDet
+from model.model import SegDet
 
 
 # --- Setup ---
@@ -15,7 +15,7 @@ model = SegDet(ckpt_path=ckpt_path).to(device)
 model.eval()
 
 # --- Load & preprocess image ---
-img_path = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/12.png"  # replace with your image path
+img_path = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/utils/12.png"  # replace with your image path
 image = Image.open(img_path).convert("RGB")
 
 transform = T.Compose([

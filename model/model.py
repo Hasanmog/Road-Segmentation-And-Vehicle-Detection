@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from det_head.detection import Det_Head 
-from seg_head.pred_head import Seg_Head
-from encoder.full_encoder import MultiScaleFusion
+from model.det_head.detection import Det_Head 
+from model.seg_head.pred_head import Seg_Head
+from model.encoder.full_encoder import MultiScaleFusion
 
 
 class SegDet(nn.Module):
