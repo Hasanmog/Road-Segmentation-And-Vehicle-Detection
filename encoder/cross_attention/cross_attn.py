@@ -1,5 +1,5 @@
 import torch.nn as nn
-from cross_attention.crossvit import MultiScaleBlock
+from encoder.cross_attention.crossvit import MultiScaleBlock
 
 
 class CrossAttnBlock(nn.Module): 
