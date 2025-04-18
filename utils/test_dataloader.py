@@ -2,7 +2,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
-from dataloader import RoadSegDataset  , VehicleDetDataset
+from data.dataloader import RoadSegDataset  , VehicleDetDataset
 
 def denormalize(tensor, mean, std):
     for t, m, s in zip(tensor, mean, std):
