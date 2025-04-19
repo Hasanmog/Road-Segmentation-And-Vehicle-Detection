@@ -62,7 +62,8 @@ image_vis = to_pil_image(image.cpu())
 # Plot
 fig, ax = plt.subplots(1, figsize=(8, 8))
 ax.imshow(image_vis)
-
+print(f"bbox shape : {target['boxes'].shape}")
+print(f"label shape: {target['labels'].shape}")
 for box, label in zip(target['boxes'], target['labels']):
     x1, y1, x2, y2 = box.tolist()
     w = x2 - x1
