@@ -108,7 +108,7 @@ class VehicleDetDataset(Dataset):
                 break
 
         anns = [ann for ann in self.annotations["annotations"] if ann["image_id"] == image_id]
-
+        # print("raw_anno" , anns)
         obj_target = torch.zeros((self.grid_size, self.grid_size))
         cls_target = torch.zeros((self.grid_size, self.grid_size))
         bbox_target = torch.zeros((4, self.grid_size, self.grid_size))
@@ -121,6 +121,14 @@ class VehicleDetDataset(Dataset):
                 continue
             label = id_map[ann["category_id"]]
             x1, y1, x2, y2 = self._resize_bbox_to_xyxy(ann["bbox"], original_w, original_h)
+            # print(f"original_w: {original_w}, original_h: {original_h}")
+            # print(f"image_path: {image_path}")
+            # for ann in anns:
+            #     print("bbox:", ann["bbox"])
+            #     x1, y1, x2, y2 = self._resize_bbox_to_xyxy(ann["bbox"], original_w, original_h)
+            #     # print(f"Resized xyxy: {x1:.2f}, {y1:.2f}, {x2:.2f}, {y2:.2f}")
+
+
             gi = int((x1 + x2) / 2 / stride)
             gj = int((y1 + y2) / 2 / stride)
             if gi >= self.grid_size or gj >= self.grid_size:
@@ -131,13 +139,24 @@ class VehicleDetDataset(Dataset):
             bbox_target[1, gj, gi] = y1 / self.img_size
             bbox_target[2, gj, gi] = x2 / self.img_size
             bbox_target[3, gj, gi] = y2 / self.img_size
-
+        # print("Final obj_target max:", obj_target.max())
+        # print("Final labels unique:", cls_target.unique())
+        # print("Final bbox_target sum:", bbox_target.sum())
+        # print(bbox_target.shape)
         target = {
             "obj": obj_target,
             "labels": cls_target,
             "boxes": bbox_target,
             "image_id": image_id
         }
-
-        return image, target             
+        return image, target
+    
+    
+               
+if __name__ == "__main__":
+    det_dataset = VehicleDetDataset(dataset_dir="/home/hasanmog/datasets/vedai" , 
+                                                         mode = "train" , 
+                                                         img_size = 512)           
+    
+    sample = det_dataset[0]
              
