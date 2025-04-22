@@ -25,11 +25,8 @@ class Seg_Head(nn.Module):
             nn.Upsample(size=(512, 512), mode='bilinear', align_corners=True)
         )
         
-        self.activation = nn.Sigmoid()
-
     def forward(self, x):
         x = self.head_layer1(x)
         x = self.head_layer2(x)
         x = self.head_layer3(x)
-        x = self.activation(x)
         return x
