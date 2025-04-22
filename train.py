@@ -100,7 +100,7 @@ def val_one_epoch(model , epoch , args):
         with torch.no_grad():
             outputs_det = model(det_img)
         pred_box , pred_label , pred_score = outputs_det['bbox'], torch.sigmoid(outputs_det['class_score']),  torch.sigmoid(outputs_det['obj_score'])
-        obj_thresh = 0.01
+        obj_thresh = 0.5
         keep_mask = (pred_score > obj_thresh)
 
         # Convert bbox from [B, 4, H, W] to [B, H, W, 4]
@@ -111,7 +111,8 @@ def val_one_epoch(model , epoch , args):
         pred_bbox = pred_bbox.reshape(-1, 4)
         gt_box = gt_box.reshape(-1, 4)
         keep_mask = keep_mask.reshape(-1)
-
+        print("pred_bbox" , pred_bbox)
+        print("gt_box" , gt_box)
         # Apply the mask
         pred_xyxy = pred_bbox[keep_mask]
         gt_xyxy = gt_box[keep_mask]
@@ -179,13 +180,13 @@ def train(args):
     model.to(device)
     
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr , )
-    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    optimizer, 
-    max_lr=args.lr, 
-    steps_per_epoch=len(seg_loader), 
-    epochs=args.epochs
-)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+#     scheduler = torch.optim.lr_scheduler.OneCycleLR(
+#     optimizer, 
+#     max_lr=args.lr, 
+#     steps_per_epoch=len(seg_loader), 
+#     epochs=args.epochs
+# )
 
     seg_criterion = torch.nn.BCEWithLogitsLoss()
     det_criterion = torch.nn.SmoothL1Loss()
