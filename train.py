@@ -96,10 +96,10 @@ def val_one_epoch(model , epoch , args):
         det_img = det_img.to(device)
         bbox , labels , obj = target["boxes"] , target["labels"] , target["obj"]
         gt_box , labels , obj = bbox.to(device) , labels.to(device) , obj.to(device)
-        
+        gt_box = torch.sigmoid(gt_box)
         with torch.no_grad():
             outputs_det = model(det_img)
-        pred_box , pred_label , pred_score = outputs_det['bbox'], torch.sigmoid(outputs_det['class_score']),  torch.sigmoid(outputs_det['obj_score'])
+        pred_box , pred_label , pred_score = torch.sigmoid(outputs_det['bbox']), torch.sigmoid(outputs_det['class_score']),  torch.sigmoid(outputs_det['obj_score'])
         obj_thresh = 0.5
         keep_mask = (pred_score > obj_thresh)
 
@@ -111,8 +111,8 @@ def val_one_epoch(model , epoch , args):
         pred_bbox = pred_bbox.reshape(-1, 4)
         gt_box = gt_box.reshape(-1, 4)
         keep_mask = keep_mask.reshape(-1)
-        print("pred_bbox" , pred_bbox)
-        print("gt_box" , gt_box)
+        # print("pred_bbox" , pred_bbox)
+        # print("gt_box" , gt_box)
         # Apply the mask
         pred_xyxy = pred_bbox[keep_mask]
         gt_xyxy = gt_box[keep_mask]
