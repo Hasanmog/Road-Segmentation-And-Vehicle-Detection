@@ -307,10 +307,10 @@ if __name__ == "__main__":
 
     
     args = parser.parse_args()
-    # train(args)
-    checkpoint = torch.load("/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_5.pt")
-    model = SegDet(ckpt_path=None).to('cuda' if torch.cuda.is_available() else 'cpu')
-    model.load_state_dict(checkpoint["model_state"])
-    model.eval()
-    scores = val_one_epoch(model , epoch = 5 , args = args)
-    print(scores)
+    train(args)
+    # checkpoint = torch.load("/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_5.pt")
+    # model = SegDet(ckpt_path=None).to('cuda' if torch.cuda.is_available() else 'cpu')
+    # model.load_state_dict(checkpoint["model_state"])
+    # model.eval()
+    # scores = val_one_epoch(model , epoch = 5 , args = args)
+    # print(scores)
