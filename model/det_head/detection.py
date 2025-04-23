@@ -11,6 +11,7 @@ class Det_Head(nn.Module):
             nn.ReLU(),
             nn.Conv2d(128, 64, 3, padding=1),
             nn.ReLU(),
+            nn.Dropout2d(p=0.2),
             nn.Conv2d(64, 4 + 1 + num_classes, 1)
         )
     
