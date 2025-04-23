@@ -10,43 +10,14 @@ from torch.utils.data import DataLoader
 from data.dataloader import RoadSegDataset , VehicleDetDataset
 from data.postprocess import postprocess_bbox 
 from model.model import SegDet 
-from metrics import compute_iou , iou , class_acc
+from metrics import mask_iou , box_iou , class_acc , dice_loss , focal_loss
 from neptune_key import NEPTUNE_API_TOKEN
+from train_utils import save_scores , interleaving , pick_scheduler
 
-def save_scores(scores, save_dir, epoch):
-    os.makedirs(save_dir, exist_ok=True)
-    path = os.path.join(save_dir, f"val_scores_epoch_{epoch}.json")
-    scores_serializable = {k: float(v) if isinstance(v, torch.Tensor) else v for k, v in scores.items()}
-    with open(path, "a") as f:
-        json.dump(scores_serializable, f, indent=4)
-
-def interleaving(model , mode:str):
-    '''
-    mode = 'seg' or 'det
-    function for freezing the head that is the opposite of the mode
-    eg : mode = 'seg' --> freeze the detection head
-    '''
-    if mode not in {'seg', 'det'}:
-        raise ValueError("mode must be either 'seg' or 'det'")
-    
-    requires_grad_map = {
-        'seg': {'seg_head': True, 'det_head': False},
-        'det': {'seg_head': False, 'det_head': True}
-    }
-    
-    for head_name, requires_grad in requires_grad_map[mode].items():
-        for p in getattr(model, head_name).parameters():
-            p.requires_grad = requires_grad
-    model.train()
-    return model
-
-
+# validation
 def val_one_epoch(model , epoch , args):
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # for p in model.parameters():
-    #     p.requires_grad = True
     model.eval()
     model.to(device)
 
@@ -73,67 +44,73 @@ def val_one_epoch(model , epoch , args):
                                                     persistent_workers=True)
     print(f"There are {len(seg_val)} segmentation validation samples")
     print(f"There are {len(det_val)} detection validation samples")
-    mask_iou = 0
-    bbox_iou = 0
+    
+    seg_acc = 0
+    bbox_acc = 0
     cls_acc = 0
 
     for seg_batch in tqdm(seg_loader, desc=f"Segmentation Validation"): 
         
         seg_img , mask = seg_batch
-        seg_img , mask = seg_img.to(device) , mask.to(device)
+        seg_img , gt_mask = seg_img.to(device) , mask.to(device)
         
         with torch.no_grad():
             outputs_seg = model(seg_img)
-            pred_mask = torch.sigmoid(outputs_seg['masks'])
-            seg_iou = compute_iou(pred_mask , mask)
-            # print(f"Sample mask IoU: {seg_iou.item()}")
-            mask_iou+=seg_iou
             
-        
+            pred_mask = torch.sigmoid(outputs_seg['masks'])
+            
+            seg_iou = mask_iou(pred_mask , gt_mask)
+            
+            seg_acc += seg_iou.item()
+            
     for det_batch in tqdm(det_loader, desc=f"Detection Validation"): 
         
         det_img , target = det_batch
         det_img = det_img.to(device)
-        bbox , labels , obj = target["boxes"] , target["labels"] , target["obj"]
-        gt_box , labels , obj = bbox.to(device) , labels.to(device) , obj.to(device)
-        gt_box = torch.sigmoid(gt_box)
+        gt_box = target["boxes"].to(device)
+        gt_labels = target["labels"].to(device)
+        gt_obj = target["obj"].to(device)
+        
         with torch.no_grad():
             outputs_det = model(det_img)
-        pred_box , pred_label , pred_score = torch.sigmoid(outputs_det['bbox']), torch.sigmoid(outputs_det['class_score']),  torch.sigmoid(outputs_det['obj_score'])
-        obj_thresh = 0.5
-        keep_mask = (pred_score > obj_thresh)
+            pred_box = outputs_det['bbox']       
+            pred_label = outputs_det['class_score']  
+            pred_score = torch.sigmoid(outputs_det['obj_score'])
+        valid_iou_batches = 0
+        for b in range(det_img.size(0)):
+            pred_bbox_b = pred_box[b]       # [4, H, W]
+            pred_score_b = pred_score[b]    # [H, W]
+            pred_label_b = pred_label[b]
+            gt_bbox_b = gt_box[b]
+            gt_obj_b = gt_obj[b]
+            gt_label_b = gt_labels[b]
 
-        # Convert bbox from [B, 4, H, W] to [B, H, W, 4]
-        pred_bbox = pred_box.permute(0, 2, 3, 1)
-        gt_box = gt_box.permute(0, 2, 3, 1)
+            pred_mask = pred_score_b > 0.1
+            gt_mask = gt_obj_b == 1
 
-        # Flatten everything to [B*H*W, 4] and [B*H*W]
-        pred_bbox = pred_bbox.reshape(-1, 4)
-        gt_box = gt_box.reshape(-1, 4)
-        keep_mask = keep_mask.reshape(-1)
-        # print("pred_bbox" , pred_bbox)
-        # print("gt_box" , gt_box)
-        # Apply the mask
-        pred_xyxy = pred_bbox[keep_mask]
-        gt_xyxy = gt_box[keep_mask]
-        if pred_xyxy.numel() == 0 or gt_xyxy.numel() == 0:
-            det_iou = torch.tensor(0.0, device=device)
-        else:
-            det_iou = iou(pred_xyxy, gt_xyxy)
-            bbox_iou += det_iou.mean()
+            if pred_mask.sum() == 0 or gt_mask.sum() == 0:
+                continue
 
-     
-        cls_score = class_acc(pred_label , labels , obj)
-        cls_acc+=cls_score
-    
-    
+            pred_boxes = pred_bbox_b[:, pred_mask].T  # [N_pred, 4]
+            gt_boxes = gt_bbox_b[:, gt_mask].T        # [N_gt, 4]
+
+            if pred_boxes.shape[0] == gt_boxes.shape[0]:
+                det_iou = box_iou(pred_boxes, gt_boxes).mean().item()
+                bbox_acc += det_iou
+                valid_iou_batches += 1
+
+            cls_score = class_acc(pred_label_b, gt_label_b, gt_obj_b)
+            cls_acc += cls_score
+
     scores = {
-        'seg_quality' : mask_iou / len(seg_loader) , 
-        'det_quality' :  bbox_iou / len(det_loader) , 
-        'class_quality' : cls_acc / len(det_loader)
+        'seg_quality': seg_acc / len(seg_loader),
+        'det_quality': bbox_acc / max(1, valid_iou_batches),
+        'class_quality': cls_acc / len(det_loader)
     }
-    save_scores(scores , args.out_dir , epoch )
-               
+
+    save_scores(scores, args.out_dir, epoch)
+
+#Full Training                
 def train(args):
     
     run = None
@@ -143,6 +120,7 @@ def train(args):
         api_token=NEPTUNE_API_TOKEN,
         )  
     device = 'cuda' if torch.cuda.is_available() else 'cpu' 
+    
     seg_dataset_full = RoadSegDataset(dataset_dir=args.seg_data_dir , 
                                                         mode = 'train' , 
                                                         img_size = args.img_size)
@@ -151,17 +129,17 @@ def train(args):
                                                          mode = "train" , 
                                                          img_size = args.img_size)
     
-    seg_dataset = Subset(seg_dataset_full , range(len(det_dataset)))
+    seg_dataset = Subset(seg_dataset_full , range(len(det_dataset))) # to match the size of detection set
     
     seg_loader = DataLoader(dataset = seg_dataset ,
-                                                    batch_size = args.train_batch,
+                                                    batch_size = args.seg_train_batch,
                                                     shuffle = True , 
                                                     num_workers = args.num_workers , 
                                                     pin_memory=True, 
                                                     persistent_workers=True)
     
     det_loader = DataLoader(dataset = det_dataset ,
-                                                    batch_size = args.train_batch,
+                                                    batch_size = args.det_train_batch,
                                                     shuffle = True , 
                                                     num_workers = args.num_workers , 
                                                     pin_memory=True, 
@@ -171,30 +149,36 @@ def train(args):
     
     if args.freeze_backbone:
         assert args.ckpt_path != None , "To freeze backbone , we need weight file path in the '--ckpt_path' argument"
-        
+          
     model = SegDet(img_size = args.img_size,
                                 small_patch_size = args.small_patch,
                                 large_patch_size = args.large_patch,
                                 ckpt_path = args.ckpt_path ,
                                 backbone_freeze = args.freeze_backbone)
+    if args.resume_checkpoint:
+        print(f"Resuming from checkpoint: {args.resume_checkpoint}")
+        checkpoint = torch.load(args.resume_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint["model_state"], strict=False)
+        
     model.to(device)
     
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr , )
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
-#     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-#     optimizer, 
-#     max_lr=args.lr, 
-#     steps_per_epoch=len(seg_loader), 
-#     epochs=args.epochs
-# )
-
-    seg_criterion = torch.nn.BCEWithLogitsLoss()
+    # Trainable param vs Total number of param
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Training {trainable_params:,} out of {total_params:,} parameters "
+        f"({100 * trainable_params / total_params:.2f}%)")
+    
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr , weight_decay = args.weight_decay)
+    scheduler = pick_scheduler(optimizer , scheduler = args.lr_scheduler)
+    
+    seg_criterion = torch.nn.BCEWithLogitsLoss() # added to the dice loss 
     det_criterion = torch.nn.SmoothL1Loss()
     class_criterion = torch.nn.BCEWithLogitsLoss()
-    obj_criterion = torch.nn.BCEWithLogitsLoss()
-    scaler = GradScaler()
-    saving_loss = float('inf')
     
+    scaler = GradScaler()
+    
+    saving_loss = float('inf')
+    model.train()
     for epoch in range(args.epochs):
         seg_loss_total = 0
         det_loss_total = 0
@@ -202,54 +186,77 @@ def train(args):
         cls_loss_total = 0
         total_batches = 0
         for (seg_batch , det_batch) in tqdm(zip(seg_loader , det_loader), desc=f"Epoch {epoch+1}"):
+            
            #segmentation
             total_batches += 1
             optimizer.zero_grad()
             seg_img , mask = seg_batch
-            seg_img , mask = seg_img.to(device) , mask.to(device)
+            seg_img , gt_mask = seg_img.to(device) , mask.to(device)
             model = interleaving(model , mode = 'seg')
             with torch.amp.autocast(device_type='cuda'):
                 output = model(seg_img)
-                pred_mask = torch.sigmoid(output['masks'])
-                loss_seg = seg_criterion(pred_mask , mask)
+                pred_mask = output['masks']
+                loss_seg = seg_criterion(pred_mask, gt_mask) + dice_loss(torch.sigmoid(pred_mask), gt_mask)
             if run:
                 run["segmentation_loss/batch"].append(loss_seg)
+                
             #detection   
             det_img , target = det_batch
             det_img = det_img.to(device)
             model = interleaving(model , mode = 'det')
             bbox , labels , obj = target["boxes"] , target["labels"] , target["obj"]
-            bbox , labels , obj = bbox.to(device) , labels.to(device) , obj.to(device)
+            gt_bbox , gt_labels , gt_obj = bbox.to(device) , labels.to(device) , obj.to(device)
             with torch.amp.autocast(device_type='cuda'):
                 output = model(det_img)
                 pred_bbox , pred_score, pred_labels = output['bbox'] , output['obj_score'] , output['class_score']
-                pred_bbox = torch.sigmoid(output['bbox'])
-                loss_det = det_criterion(pred_bbox , bbox)
-                loss_class = class_criterion(pred_labels , labels) 
-                loss_obj = obj_criterion(pred_score , obj)
-            total_loss = 2.0 * loss_seg + 2.0 * loss_det + 0.5 * loss_class + 0.5 * loss_obj
+                
+                mask = gt_obj== 1
+                mask = mask.unsqueeze(1).expand_as(pred_bbox)
+                pred_bbox = pred_bbox[mask].view(-1, 4)
+                gt_bbox = gt_bbox[mask].view(-1, 4)
+                if pred_bbox.numel() > 0 and gt_bbox.numel() > 0:
+                    loss_det = det_criterion(pred_bbox, gt_bbox)
+                else:
+                    loss_det = torch.tensor(0.0, device=pred_bbox.device)
+
+                mask = gt_obj == 1
+
+                if mask.sum() > 0:
+                    loss_class = focal_loss(pred_labels[mask], gt_labels[mask], gamma=2.0, alpha=0.25)
+                else:
+                    loss_class = torch.tensor(0.0, device=pred_labels.device)
+    
+                loss_obj = focal_loss(torch.sigmoid(pred_score) , gt_obj)
+                
+            total_loss = 2.0 * loss_seg + 1.5 * loss_det + 0.5 * loss_class + 0.5 * loss_obj
 
             if run:
                     run["detection_loss/batch"].append(loss_det)
                     run["classification_loss/batch"].append(loss_class)
                     run["objectscore_loss/batch"].append(loss_obj)
                     run["total_loss/batch"].append(total_loss)
+                    
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            
             if run:
                 current_lr = scheduler.get_last_lr()[0]
                 run["learning_rate"].append(current_lr)
+                
             seg_loss_total += loss_seg.item()
             det_loss_total += loss_det.item()
             obj_loss_total += loss_obj.item()
             cls_loss_total += loss_class.item()
             total_loss = seg_loss_total + det_loss_total + obj_loss_total + cls_loss_total
+            
         scheduler.step()
+        
         print(f"[Epoch {epoch+1}] Seg Loss: {seg_loss_total / total_batches:.4f} | "
           f"Det Loss: {det_loss_total / total_batches:.4f} | "
           f"Obj: {obj_loss_total / total_batches:.4f} | "
           f"Cls: {cls_loss_total / total_batches:.4f}")
+        
         if run:
                     run["segmentation_loss/epoch"].append(seg_loss_total / total_batches)
                     run["detection_loss/epoch"].append(det_loss_total / total_batches)
@@ -263,8 +270,8 @@ def train(args):
             checkpoint = {
                     "epoch": epoch,
                     "model_state": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    }
+                    "optimizer_state": optimizer.state_dict(),}
+            
             torch.save(checkpoint, os.path.join(args.out_dir, f"checkpoint_epoch_{epoch+1}.pt"))
     if run:
         run.stop()
@@ -287,19 +294,23 @@ if __name__ == "__main__":
     
     #Training-related args
     parser.add_argument('--lr' , type=float , default=1e-5 , help="Learning Rate")
-    parser.add_argument('--train_batch' , type=int , required=True , help="Training Batch Size")
+    parser.add_argument('--weight_decay' , type=float , default=5e-4 , help="Training Weight Decay")
+    parser.add_argument('--seg_train_batch' , type=int , required=True , help="Segmentation Training Batch Size")
+    parser.add_argument('--det_train_batch' , type=int , required=True , help="Detection Training Batch Size")
     parser.add_argument("--val_batch" , type=int , required=True , help="Validation Batch Size")
-    parser.add_argument('--num_workers' , type=int , default=4 , help = "number of workers for data loading")
-    parser.add_argument("--lr_scheduler", type=str , default = 'exponential_decay' , help = "lr schedulers implemented : exponential_decay & ")
+    parser.add_argument('--num_workers' , type=int , default=4 , help = "Number Of Workers For Data Loading")
+    parser.add_argument("--lr_scheduler", type=str , default = 'exponential' , help = "lr schedulers implemented : exponential_decay & ")
     parser.add_argument('--epochs' , type=int , required=True , help="number of training epochs")
     parser.add_argument('--out_dir' , type=str , required=True , help="directory to save weight file")
     parser.add_argument('--neptune' , type=bool , default=False , help='set to True for neptune logging')
+    parser.add_argument('--resume_checkpoint' , type=str , default=None , help="Checkpoint to resume training from")
+
     
     args = parser.parse_args()
-    train(args)
-    # checkpoint = torch.load("/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_1.pt")
-    # model = SegDet(ckpt_path=None).to('cuda' if torch.cuda.is_available() else 'cpu')
-    # model.load_state_dict(checkpoint["model_state"])
-    # model.eval()
-    # scores = val_one_epoch(model , args)
-    # print(scores)
+    # train(args)
+    checkpoint = torch.load("/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_5.pt")
+    model = SegDet(ckpt_path=None).to('cuda' if torch.cuda.is_available() else 'cpu')
+    model.load_state_dict(checkpoint["model_state"])
+    model.eval()
+    scores = val_one_epoch(model , epoch = 5 , args = args)
+    print(scores)
