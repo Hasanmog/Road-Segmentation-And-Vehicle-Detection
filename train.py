@@ -123,7 +123,8 @@ def train(args):
     
     seg_dataset= RoadSegDataset(dataset_dir=args.seg_data_dir , 
                                                         mode = 'train' , 
-                                                        img_size = args.img_size)
+                                                        img_size = args.img_size,
+                                                        target_len=args.dataset_len)
     grid_size = args.img_size // args.small_patch
     det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir , 
                                                          mode = "train" , 
@@ -226,8 +227,7 @@ def train(args):
     
                 loss_obj = class_criterion(pred_score , gt_obj)
                 
-            total_loss = 2.0 * loss_seg + 1.5 * loss_det + 0.5 * loss_class + 0.5 * loss_obj
-
+            total_loss = 1.5 * loss_seg + 1.5 * loss_det + 1.0 * loss_class + 0.5 * loss_obj
             if run:
                     run["detection_loss/batch"].append(loss_det)
                     run["classification_loss/batch"].append(loss_class)
@@ -282,6 +282,7 @@ if __name__ == "__main__":
     # Dataset-related args
     parser.add_argument('--seg_data_dir' , type =str , required=True , help="Directory where the whole segmentation dataset is stored")
     parser.add_argument('--det_data_dir' , type =str , required=True , help="Directory where the whole detection dataset is stored")
+    parser.add_argument('--dataset_len' , type = int , default = 3000 , help="if dataset is smaller , augmentation is applied to reach this size")
     parser.add_argument('--img_size' , type=int , default=512 , help="Size of the image")
     
     #Model-related args

@@ -4,70 +4,88 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 import torchvision.transforms as T
-
-class RoadSegDataset(Dataset):
-    def __init__(self , 
-                     dataset_dir : str , 
-                     img_size : int , 
-                     mode : str ):
-        
-        self.dataset_dir = dataset_dir  
-        
-        if mode == "train" or mode == "val" or mode == "test":
-            self.imgs , self.labels = os.path.join(self.dataset_dir , f"{mode}/images") , os.path.join(self.dataset_dir , f"{mode}/labels")
-            
-        else:
-            raise NameError("Mode must be one of: 'train', 'val', 'test'")
-        
-        self.image_transform = T.Compose([
-            T.Resize((img_size, img_size)),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406],
-                        std=[0.229, 0.224, 0.225])
-        ])
-        
-        self.mask_transform = T.Compose([
-                                                                T.Resize((img_size, img_size)),
-                                                                T.ToTensor(),                    
-                                                            ])
-        
-        self.images = sorted([
-            f for f in os.listdir(self.imgs) if f.endswith(('.png', '.jpg', '.jpeg'))
-        ])
-        
-        self.masks = sorted([
-            f for f in os.listdir(self.labels) if f.endswith(('.png', '.jpg', '.jpeg'))
-        ])
-        
-        
-    def __len__(self):
-        
-        assert len(self.images) == len(self.masks) , "Mismatch in the number of images and masks"
-        return len(self.images)
-    
-    
-    def __getitem__(self , idx):
-        img_name = self.images[idx]
-        img_path = os.path.join(self.imgs , img_name)
-        mask_path = os.path.join(self.labels , img_name)
-        
-        image = Image.open(img_path).convert("RGB")
-        mask = Image.open(mask_path).convert("L")
-
-        image = self.image_transform(image)
-        mask = self.mask_transform(mask)
-
-        return image, mask    
-        
-import os
-import json
-import torch
-from torch.utils.data import Dataset
-from PIL import Image
 import numpy as np
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+import os
+from PIL import Image
+import torch
+from torch.utils.data import Dataset
+import torchvision.transforms as T
+import random
+
+
+
+class RoadSegDataset(Dataset):
+    def __init__(self, dataset_dir: str, img_size: int, mode: str, target_len: int = None):
+        self.dataset_dir = dataset_dir
+
+        if mode not in ["train", "val", "test"]:
+            raise NameError("Mode must be one of: 'train', 'val', 'test'")
+
+        self.imgs = os.path.join(self.dataset_dir, f"{mode}/images")
+        self.labels = os.path.join(self.dataset_dir, f"{mode}/labels")
+
+        self.images = sorted([
+            f for f in os.listdir(self.imgs) if f.endswith(('.png', '.jpg', '.jpeg'))
+        ])
+        self.masks = sorted([
+            f for f in os.listdir(self.labels) if f.endswith(('.png', '.jpg', '.jpeg'))
+        ])
+
+        self.true_len = len(self.images)
+        self.target_len = target_len if target_len and target_len > self.true_len else self.true_len
+        self.mode = mode
+        self.img_size = img_size
+
+        # Basic transforms
+        self.base_transform = T.Compose([
+            T.Resize((img_size, img_size)),
+            T.ToTensor(),
+        ])
+
+        # Augmentations for training
+        self.augment = T.RandomApply([
+            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            T.RandomHorizontalFlip(p=1.0),
+            T.RandomRotation(degrees=15)
+        ], p=0.8)
+
+        # Normalization for image only
+        self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    def __len__(self):
+        return self.target_len
+
+    def __getitem__(self, idx):
+        true_idx = idx % self.true_len
+        img_name = self.images[true_idx]
+        img_path = os.path.join(self.imgs, img_name)
+        mask_path = os.path.join(self.labels, img_name)
+
+        image = Image.open(img_path).convert("RGB")
+        mask = Image.open(mask_path).convert("L")
+
+        # Apply base resize first
+        image = self.base_transform(image)
+        mask = self.base_transform(mask)
+
+        if self.mode == "train" and idx >= self.true_len:
+            # Apply the same random seed to both image and mask transforms
+            seed = random.randint(0, 99999)
+            torch.manual_seed(seed)
+            image = self.augment(image)
+            torch.manual_seed(seed)
+            mask = self.augment(mask)
+
+        # Normalize image only
+        image = self.normalize(image)
+
+        return image, mask.float()
+
+        
 
 class VehicleDetDataset(Dataset):
     def __init__(self, dataset_dir, img_size, mode, grid_size=64, target_len=None):
