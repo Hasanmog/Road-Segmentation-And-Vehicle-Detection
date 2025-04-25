@@ -13,102 +13,102 @@ from model.model import SegDet
 from metrics import mask_iou , box_iou , class_acc , dice_loss , focal_loss
 from neptune_key import NEPTUNE_API_TOKEN
 from train_utils import save_scores , interleaving , pick_scheduler
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
+from torchvision.ops import box_convert
 
-# validation
+
+
 def val_one_epoch(model , epoch , args):
-    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.eval()
     model.to(device)
+    grid_size = args.img_size // args.small_patch
 
-    seg_val = RoadSegDataset(dataset_dir=args.seg_data_dir , 
-                                                        mode = 'val' , 
-                                                        img_size = args.img_size)
-    
-    det_val = VehicleDetDataset(dataset_dir=args.det_data_dir , 
-                                                         mode = "val" , 
-                                                         img_size = args.img_size)
-    
-    seg_loader = DataLoader(dataset = seg_val ,
-                                                    batch_size = args.val_batch,
-                                                    shuffle = True , 
-                                                    num_workers = args.num_workers,
-                                                    pin_memory=True, 
-                                                    persistent_workers=True)
-    
-    det_loader = DataLoader(dataset = det_val ,
-                                                    batch_size = args.val_batch,
-                                                    shuffle = True , 
-                                                    num_workers = args.num_workers , 
-                                                    pin_memory=True, 
-                                                    persistent_workers=True)
+    # Datasets
+    seg_val = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='val', img_size=args.img_size)
+    det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=grid_size)
+
+    seg_loader = DataLoader(seg_val, batch_size=args.val_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+    det_loader = DataLoader(det_val, batch_size=args.val_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+
     print(f"There are {len(seg_val)} segmentation validation samples")
     print(f"There are {len(det_val)} detection validation samples")
-    
-    seg_acc = 0
-    bbox_acc = 0
-    cls_acc = 0
 
-    for seg_batch in tqdm(seg_loader, desc=f"Segmentation Validation"): 
-        
-        seg_img , mask = seg_batch
-        seg_img , gt_mask = seg_img.to(device) , mask.to(device)
-        
+    seg_acc = 0
+    metric = MeanAveragePrecision(iou_type="bbox")
+
+    # --- Segmentation ---
+    for seg_img, mask in tqdm(seg_loader, desc="Segmentation Validation"):
+        seg_img, gt_mask = seg_img.to(device), mask.to(device)
+
         with torch.no_grad():
             outputs_seg = model(seg_img)
-            
             pred_mask = torch.sigmoid(outputs_seg['masks'])
-            
-            seg_iou = mask_iou(pred_mask , gt_mask)
-            
+            seg_iou = mask_iou(pred_mask, gt_mask)
             seg_acc += seg_iou.item()
-            
-    for det_batch in tqdm(det_loader, desc=f"Detection Validation"): 
-        
-        det_img , target = det_batch
+
+    # --- Detection ---
+    for det_img, target in tqdm(det_loader, desc="Detection Validation"):
         det_img = det_img.to(device)
-        gt_box = target["boxes"].to(device)
-        gt_labels = target["labels"].to(device)
-        gt_obj = target["obj"].to(device)
-        
+
         with torch.no_grad():
             outputs_det = model(det_img)
-            pred_box = outputs_det['bbox']       
-            pred_label = outputs_det['class_score']  
-            pred_score = torch.sigmoid(outputs_det['obj_score'])
-        valid_iou_batches = 0
+            pred_box = outputs_det['bbox']      
+            pred_label = outputs_det['class_score'] 
+            pred_score = torch.sigmoid(outputs_det['obj_score'])  
+
+        batch_preds = []
+        batch_targets = []
+
         for b in range(det_img.size(0)):
-            pred_bbox_b = pred_box[b]       # [4, H, W]
-            pred_score_b = pred_score[b]    # [H, W]
-            pred_label_b = pred_label[b]
-            gt_bbox_b = gt_box[b]
-            gt_obj_b = gt_obj[b]
-            gt_label_b = gt_labels[b]
+            pred_bbox_b = pred_box[b]     
+            pred_score_b = pred_score[b]    
+            pred_label_b = pred_label[b]    
 
-            pred_mask = pred_score_b > 0.1
-            gt_mask = gt_obj_b == 1
+            gt_bbox_b = target['boxes'][b]  
+            gt_obj_b = target['obj'][b]     
+            gt_label_b = target['labels'][b]  
 
-            if pred_mask.sum() == 0 or gt_mask.sum() == 0:
+            # --------- Format predicted boxes ---------
+            mask = pred_score_b > 0.1
+            if mask.sum() == 0:
                 continue
 
-            pred_boxes = pred_bbox_b[:, pred_mask].T  # [N_pred, 4]
-            gt_boxes = gt_bbox_b[:, gt_mask].T        # [N_gt, 4]
+            pred_boxes = pred_bbox_b[:, mask].T  
+            pred_boxes = box_convert(pred_boxes, in_fmt="cxcywh", out_fmt="xyxy")
+            scores = pred_score_b[mask]
+            labels = torch.argmax(pred_label_b[:, mask], dim=0)
 
-            if pred_boxes.shape[0] == gt_boxes.shape[0]:
-                det_iou = box_iou(pred_boxes, gt_boxes).mean().item()
-                bbox_acc += det_iou
-                valid_iou_batches += 1
+            batch_preds.append({
+                "boxes": pred_boxes.detach().cpu(),
+                "scores": scores.detach().cpu(),
+                "labels": labels.detach().cpu()
+            })
 
-            cls_score = class_acc(pred_label_b, gt_label_b, gt_obj_b)
-            cls_acc += cls_score
+            # --------- Format ground truth boxes ---------
+            gt_mask = gt_obj_b == 1
+            gt_boxes = gt_bbox_b[:, gt_mask].T
+            gt_boxes = box_convert(gt_boxes, in_fmt="cxcywh", out_fmt="xyxy")
+            gt_labels = gt_label_b[gt_mask]
+
+            batch_targets.append({
+                "boxes": gt_boxes.detach().cpu(),
+                "labels": gt_labels.detach().cpu()
+            })
+
+        metric.update(batch_preds, batch_targets)
+
+    map_results = metric.compute()
 
     scores = {
         'seg_quality': seg_acc / len(seg_loader),
-        'det_quality': bbox_acc / max(1, valid_iou_batches),
-        'class_quality': cls_acc / len(det_loader)
+        'mAP@0.5': map_results['map_50'].item(),
+        'mAP@[0.5:0.95]': map_results['map'].item()
     }
 
     save_scores(scores, args.out_dir, epoch)
+    return scores
+
 
 #Full Training                
 def train(args):
@@ -121,15 +121,16 @@ def train(args):
         )  
     device = 'cuda' if torch.cuda.is_available() else 'cpu' 
     
-    seg_dataset_full = RoadSegDataset(dataset_dir=args.seg_data_dir , 
+    seg_dataset= RoadSegDataset(dataset_dir=args.seg_data_dir , 
                                                         mode = 'train' , 
                                                         img_size = args.img_size)
-    
+    grid_size = args.img_size // args.small_patch
     det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir , 
                                                          mode = "train" , 
-                                                         img_size = args.img_size)
+                                                         img_size = args.img_size , 
+                                                         target_len= len(seg_dataset) , 
+                                                         grid_size=grid_size)
     
-    seg_dataset = Subset(seg_dataset_full , range(len(det_dataset))) # to match the size of detection set
     
     seg_loader = DataLoader(dataset = seg_dataset ,
                                                     batch_size = args.seg_train_batch,
@@ -162,7 +163,7 @@ def train(args):
         
     model.to(device)
     
-    # Trainable param vs Total number of param
+    
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Training {trainable_params:,} out of {total_params:,} parameters "
@@ -171,7 +172,7 @@ def train(args):
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr , weight_decay = args.weight_decay)
     scheduler = pick_scheduler(optimizer , scheduler = args.lr_scheduler)
     
-    seg_criterion = torch.nn.BCEWithLogitsLoss() # added to the dice loss 
+    seg_criterion = torch.nn.BCEWithLogitsLoss()
     det_criterion = torch.nn.SmoothL1Loss()
     class_criterion = torch.nn.BCEWithLogitsLoss()
     
@@ -221,12 +222,9 @@ def train(args):
 
                 mask = gt_obj == 1
 
-                if mask.sum() > 0:
-                    loss_class = focal_loss(pred_labels[mask], gt_labels[mask], gamma=2.0, alpha=0.25)
-                else:
-                    loss_class = torch.tensor(0.0, device=pred_labels.device)
+                loss_class = class_criterion(pred_labels , gt_labels)
     
-                loss_obj = focal_loss(torch.sigmoid(pred_score) , gt_obj)
+                loss_obj = class_criterion(pred_score , gt_obj)
                 
             total_loss = 2.0 * loss_seg + 1.5 * loss_det + 0.5 * loss_class + 0.5 * loss_obj
 
