@@ -24,7 +24,6 @@ def val_one_epoch(model , epoch , args):
     model.to(device)
     grid_size = args.img_size // args.small_patch
 
-    # Datasets
     seg_val = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='val', img_size=args.img_size)
     det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=grid_size)
 
@@ -37,63 +36,57 @@ def val_one_epoch(model , epoch , args):
     seg_acc = 0
     metric = MeanAveragePrecision(iou_type="bbox")
 
-    # --- Segmentation ---
     for seg_img, mask in tqdm(seg_loader, desc="Segmentation Validation"):
         seg_img, gt_mask = seg_img.to(device), mask.to(device)
-
         with torch.no_grad():
             outputs_seg = model(seg_img)
             pred_mask = torch.sigmoid(outputs_seg['masks'])
             seg_iou = mask_iou(pred_mask, gt_mask)
             seg_acc += seg_iou.item()
 
-    # --- Detection ---
     for det_img, target in tqdm(det_loader, desc="Detection Validation"):
         det_img = det_img.to(device)
-
         with torch.no_grad():
             outputs_det = model(det_img)
-            pred_box = outputs_det['bbox']      
-            pred_label = outputs_det['class_score'] 
-            pred_score = torch.sigmoid(outputs_det['obj_score'])  
+            pred_box = outputs_det['bbox']
+            pred_label = outputs_det['class_score']
+            pred_score = torch.sigmoid(outputs_det['obj_score'])
 
         batch_preds = []
         batch_targets = []
 
         for b in range(det_img.size(0)):
-            pred_bbox_b = pred_box[b]     
-            pred_score_b = pred_score[b]    
-            pred_label_b = pred_label[b]    
+            pred_bbox_b = pred_box[b].view(4, -1)
+            pred_score_b = pred_score[b].flatten()
+            pred_label_b = pred_label[b].permute(1, 2, 0).reshape(-1, pred_label.shape[1])
+            mask_flat = pred_score_b > 0.5
 
-            gt_bbox_b = target['boxes'][b]  
-            gt_obj_b = target['obj'][b]     
-            gt_label_b = target['labels'][b]  
-
-            # --------- Format predicted boxes ---------
-            mask = pred_score_b > 0.1
-            if mask.sum() == 0:
+            if mask_flat.sum() == 0:
                 continue
 
-            pred_boxes = pred_bbox_b[:, mask].T  
+            pred_boxes = pred_bbox_b[:, mask_flat].T
             pred_boxes = box_convert(pred_boxes, in_fmt="cxcywh", out_fmt="xyxy")
-            scores = pred_score_b[mask]
-            labels = torch.argmax(pred_label_b[:, mask], dim=0)
+            scores = pred_score_b[mask_flat]
+            labels = torch.argmax(pred_label_b[mask_flat], dim=1)
 
             batch_preds.append({
                 "boxes": pred_boxes.detach().cpu(),
                 "scores": scores.detach().cpu(),
-                "labels": labels.detach().cpu()
+                "labels":  labels.detach().cpu().to(torch.int64)
             })
 
-            # --------- Format ground truth boxes ---------
+            gt_bbox_b = target['boxes'][b].view(4, -1)
+            gt_obj_b = target['obj'][b].flatten()
+            gt_label_b = target['labels'][b].flatten()
             gt_mask = gt_obj_b == 1
+
             gt_boxes = gt_bbox_b[:, gt_mask].T
             gt_boxes = box_convert(gt_boxes, in_fmt="cxcywh", out_fmt="xyxy")
             gt_labels = gt_label_b[gt_mask]
 
             batch_targets.append({
                 "boxes": gt_boxes.detach().cpu(),
-                "labels": gt_labels.detach().cpu()
+                "labels": gt_labels.detach().cpu().to(torch.int64)
             })
 
         metric.update(batch_preds, batch_targets)
@@ -108,6 +101,7 @@ def val_one_epoch(model , epoch , args):
 
     save_scores(scores, args.out_dir, epoch)
     return scores
+
 
 
 #Full Training                
@@ -175,8 +169,10 @@ def train(args):
     
     seg_criterion = torch.nn.BCEWithLogitsLoss()
     det_criterion = torch.nn.SmoothL1Loss()
-    class_criterion = torch.nn.BCEWithLogitsLoss()
-    
+    class_criterion = torch.nn.CrossEntropyLoss()
+    object_criterion = torch.nn.BCEWithLogitsLoss(
+        
+    )
     scaler = GradScaler()
     
     saving_loss = float('inf')
@@ -210,22 +206,43 @@ def train(args):
             gt_bbox , gt_labels , gt_obj = bbox.to(device) , labels.to(device) , obj.to(device)
             with torch.amp.autocast(device_type='cuda'):
                 output = model(det_img)
-                pred_bbox , pred_score, pred_labels = output['bbox'] , output['obj_score'] , output['class_score']
+                pred_bbox = output['bbox']       # [B, 4, H, W]
+                pred_score = output['obj_score'] # [B, 1, H, W]
+                pred_labels = output['class_score'] # [B, C, H, W]
+                mask = gt_obj == 1                       # [B, H, W]
+                mask_bbox = mask.unsqueeze(1).expand_as(pred_bbox)  # [B, 4, H, W]
                 
-                mask = gt_obj== 1
-                mask = mask.unsqueeze(1).expand_as(pred_bbox)
-                pred_bbox = pred_bbox[mask].view(-1, 4)
-                gt_bbox = gt_bbox[mask].view(-1, 4)
+                pred_bbox = pred_bbox[mask_bbox].view(-1, 4)
+                gt_bbox = gt_bbox[mask_bbox].view(-1, 4)
+
                 if pred_bbox.numel() > 0 and gt_bbox.numel() > 0:
                     loss_det = det_criterion(pred_bbox, gt_bbox)
                 else:
                     loss_det = torch.tensor(0.0, device=pred_bbox.device)
 
+
                 mask = gt_obj == 1
 
-                loss_class = class_criterion(pred_labels , gt_labels)
-    
-                loss_obj = class_criterion(pred_score , gt_obj)
+               # Inside training loop:
+                loss_class = 0.0
+                for b in range(pred_labels.size(0)):
+                    mask = gt_obj[b] == 1
+                    if mask.sum() == 0:
+                        continue
+
+                    # pred_labels[b]: [2, H, W] → [H, W, 2]
+                    pred_labels_b = pred_labels[b].permute(1, 2, 0)  # [H, W, 2]
+                    pred_pos = pred_labels_b[mask]                  # [N, 2]
+
+                    gt_pos = gt_labels[b][mask].long()              # [N]
+                    loss_class += class_criterion(pred_pos, gt_pos)
+
+                loss_class = loss_class / pred_labels.size(0)
+
+
+
+
+                loss_obj = object_criterion(pred_score, gt_obj.unsqueeze(1).float())
                 
             total_loss = 1.5 * loss_seg + 1.5 * loss_det + 1.0 * loss_class + 0.5 * loss_obj
             if run:
@@ -262,7 +279,6 @@ def train(args):
                     run["objectscore_loss/epoch"].append(obj_loss_total / total_batches)
                     run["total_loss/epoch"].append(total_loss / total_batches)
                     
-        val_one_epoch(model = model , epoch = epoch , args=args)
         if  total_loss < saving_loss:
             saving_loss = total_loss      
             checkpoint = {
@@ -271,6 +287,8 @@ def train(args):
                     "optimizer_state": optimizer.state_dict(),}
             
             torch.save(checkpoint, os.path.join(args.out_dir, f"checkpoint_epoch_{epoch+1}.pt"))
+            
+        val_one_epoch(model = model , epoch = epoch , args=args)
     if run:
         run.stop()
 
@@ -307,7 +325,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     train(args)
-    # checkpoint = torch.load("/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_5.pt")
+    # checkpoint = torch.load("/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_1.pt")
     # model = SegDet(ckpt_path=None).to('cuda' if torch.cuda.is_available() else 'cpu')
     # model.load_state_dict(checkpoint["model_state"])
     # model.eval()

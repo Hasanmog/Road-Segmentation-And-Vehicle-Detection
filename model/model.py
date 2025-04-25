@@ -41,9 +41,10 @@ class SegDet(nn.Module):
         masks = self.seg_head(seg_feat)
         detections = self.det_head(det_feat)
 
-        bbox = detections[:, 0:4, :, :]
-        obj_score = detections[:, 4, :, :]
-        class_score = detections[:, 5, :, :]
+        bbox = detections[:, 0:4, :, :]                # [B, 4, H, W]
+        obj_score = detections[:, 4:5, :, :]           # [B, 1, H, W]
+        class_score = detections[:, 5:, :, :]          # [B, 2, H,_
+
 
         results = {
             "masks": masks,
