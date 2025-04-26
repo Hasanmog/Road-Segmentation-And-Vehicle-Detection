@@ -49,7 +49,7 @@ def pick_scheduler(optimizer, scheduler: str, **kwargs):
     elif scheduler == "exponential":
         return torch.optim.lr_scheduler.ExponentialLR(
             optimizer,
-            gamma=kwargs.get("gamma", 0.95)
+            gamma=kwargs.get("gamma", 0.99)
         )
     else:
         raise ValueError(

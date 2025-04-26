@@ -183,6 +183,7 @@ def train(args):
         obj_loss_total = 0
         cls_loss_total = 0
         total_batches = 0
+        timestep = 0
         for (seg_batch , det_batch) in tqdm(zip(seg_loader , det_loader), desc=f"Epoch {epoch+1}"):
             
            #segmentation
@@ -204,6 +205,7 @@ def train(args):
             model = interleaving(model , mode = 'det')
             bbox , labels , obj = target["boxes"] , target["labels"] , target["obj"]
             gt_bbox , gt_labels , gt_obj = bbox.to(device) , labels.to(device) , obj.to(device)
+            WS , WD , WC , WO = 2 , 1.5 , 1 , 0.5
             with torch.amp.autocast(device_type='cuda'):
                 output = model(det_img)
                 pred_bbox = output['bbox']       # [B, 4, H, W]
@@ -239,12 +241,9 @@ def train(args):
 
                 loss_class = loss_class / pred_labels.size(0)
 
-
-
-
                 loss_obj = object_criterion(pred_score, gt_obj.unsqueeze(1).float())
                 
-            total_loss = 1.5 * loss_seg + 1.5 * loss_det + 1.0 * loss_class + 0.5 * loss_obj
+            total_loss = WS * loss_seg + WD * loss_det + WC * loss_class + WO * loss_obj
             if run:
                     run["detection_loss/batch"].append(loss_det)
                     run["classification_loss/batch"].append(loss_class)
@@ -257,13 +256,13 @@ def train(args):
             
             if run:
                 current_lr = scheduler.get_last_lr()[0]
-                run["learning_rate"].append(current_lr)
+                run["learning_rate"].append(current_lr  , step = timestep)
                 
             seg_loss_total += loss_seg.item()
             det_loss_total += loss_det.item()
             obj_loss_total += loss_obj.item()
             cls_loss_total += loss_class.item()
-            total_loss = seg_loss_total + det_loss_total + obj_loss_total + cls_loss_total
+            total_loss = WS*seg_loss_total + WD*det_loss_total + WO*obj_loss_total + WC*cls_loss_total
             
         scheduler.step()
         
@@ -273,11 +272,12 @@ def train(args):
           f"Cls: {cls_loss_total / total_batches:.4f}")
         
         if run:
-                    run["segmentation_loss/epoch"].append(seg_loss_total / total_batches)
-                    run["detection_loss/epoch"].append(det_loss_total / total_batches)
-                    run["classification_loss/epoch"].append(cls_loss_total / total_batches)
-                    run["objectscore_loss/epoch"].append(obj_loss_total / total_batches)
-                    run["total_loss/epoch"].append(total_loss / total_batches)
+                    run["segmentation_loss/epoch"].append(seg_loss_total / total_batches , step = timestep)
+                    run["detection_loss/epoch"].append(det_loss_total / total_batches , step = timestep)
+                    run["classification_loss/epoch"].append(cls_loss_total / total_batches , step = timestep)
+                    run["objectscore_loss/epoch"].append(obj_loss_total / total_batches  , step = timestep)
+                    run["total_loss/epoch"].append(total_loss / total_batches  , step = timestep)
+        timestep+=1
                     
         if  total_loss < saving_loss:
             saving_loss = total_loss      
