@@ -32,7 +32,7 @@ def val_one_epoch(model , epoch , args):
 
     print(f"There are {len(seg_val)} segmentation validation samples")
     print(f"There are {len(det_val)} detection validation samples")
-
+    threshold = 0.3
     seg_acc = 0
     metric = MeanAveragePrecision(iou_type="bbox")
 
@@ -59,7 +59,7 @@ def val_one_epoch(model , epoch , args):
             pred_bbox_b = pred_box[b].view(4, -1)
             pred_score_b = pred_score[b].flatten()
             pred_label_b = pred_label[b].permute(1, 2, 0).reshape(-1, pred_label.shape[1])
-            mask_flat = pred_score_b > 0.5
+            mask_flat = pred_score_b > threshold
 
             if mask_flat.sum() == 0:
                 continue
@@ -119,12 +119,16 @@ def train(args):
                                                         mode = 'train' , 
                                                         img_size = args.img_size,
                                                         target_len=args.dataset_len)
-    grid_size = args.img_size // args.small_patch
+    if args.backbone == "SAM":
+        grid_size = args.img_size // args.small_patch
+        
+    else:
+        grid_size = 8
     det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir , 
                                                          mode = "train" , 
                                                          img_size = args.img_size , 
                                                          target_len= len(seg_dataset) , 
-                                                         grid_size=grid_size)
+                                                         grid_size = grid_size)
     
     
     seg_loader = DataLoader(dataset = seg_dataset ,
@@ -143,13 +147,16 @@ def train(args):
     print(f"There are {len(seg_dataset)} segmentation training samples")
     print(f"There are {len(det_dataset)} detection training samples")
     
-    if args.freeze_backbone:
-        assert args.ckpt_path != None , "To freeze backbone , we need weight file path in the '--ckpt_path' argument"
+    # if args.freeze_backbone:
+    #     assert args.sam_ckpt != None or (args.swin_det_ckpt !=None and args.swin_seg_ckpt != None) , "To freeze backbone , we need weight file"
           
     model = SegDet(img_size = args.img_size,
                                 small_patch_size = args.small_patch,
                                 large_patch_size = args.large_patch,
-                                ckpt_path = args.ckpt_path ,
+                                backbone = args.backbone,
+                                sam_ckpt_path=args.sam_ckpt , 
+                                swin_det_path= args.swin_det_ckpt ,
+                                swin_seg_path= args.swin_seg_ckpt, 
                                 backbone_freeze = args.freeze_backbone)
     if args.resume_checkpoint:
         print(f"Resuming from checkpoint: {args.resume_checkpoint}")
@@ -256,12 +263,12 @@ def train(args):
             
             if run:
                 current_lr = scheduler.get_last_lr()[0]
-                run["learning_rate"].append(current_lr  , step = timestep)
+                run["learning_rate"].append(current_lr)
                 
             seg_loss_total += loss_seg.item()
             det_loss_total += loss_det.item()
             obj_loss_total += loss_obj.item()
-            cls_loss_total += loss_class.item()
+            cls_loss_total += loss_class
             total_loss = WS*seg_loss_total + WD*det_loss_total + WO*obj_loss_total + WC*cls_loss_total
             
         scheduler.step()
@@ -304,8 +311,11 @@ if __name__ == "__main__":
     parser.add_argument('--img_size' , type=int , default=512 , help="Size of the image")
     
     #Model-related args
-    parser.add_argument('--freeze_backbone' , type=bool , default=True , help="if set , backbone(image encoder) will be freezed")
-    parser.add_argument('--ckpt_path' , type=str , default=None , help="path of the image encoder checkpoint(SAM)")
+    parser.add_argument('--backbone' , type=str , default="SWIN" , help="SWIN OR SAM")
+    parser.add_argument('--freeze_backbone' , action='store_true' , default=True , help="if set , backbone(image encoder) will be freezed")
+    parser.add_argument('--sam_ckpt' , type=str , default=None , help="path of the image encoder checkpoint(SAM)")
+    parser.add_argument('--swin_det_ckpt' , type=str , default=None , help="path to the swin detection checkpoint")
+    parser.add_argument("--swin_seg_ckpt" , type=str , default=None , help="path to the swin segmentation path")
     parser.add_argument('--small_patch' , type=int , default=8 , help = "Size of the small(local) patch size")
     parser.add_argument('--large_patch' , type=int , default=16 , help = "Size of the large(global) patch size")
     
@@ -319,7 +329,8 @@ if __name__ == "__main__":
     parser.add_argument("--lr_scheduler", type=str , default = 'exponential' , help = "lr schedulers implemented : exponential_decay & ")
     parser.add_argument('--epochs' , type=int , required=True , help="number of training epochs")
     parser.add_argument('--out_dir' , type=str , required=True , help="directory to save weight file")
-    parser.add_argument('--neptune' , type=bool , default=False , help='set to True for neptune logging')
+    parser.add_argument('--neptune', action='store_true', help='Enable Neptune logging')
+
     parser.add_argument('--resume_checkpoint' , type=str , default=None , help="Checkpoint to resume training from")
 
     

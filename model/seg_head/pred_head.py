@@ -28,10 +28,12 @@ class Seg_Head(nn.Module):
         )
         
         self.final_conv = nn.Sequential(
-            nn.Conv2d(32, 1, kernel_size=3, padding=1),
-            nn.Upsample(size=(512, 512), mode='bilinear', align_corners=True),
-            nn.Conv2d(1, 1, kernel_size=3, padding=1)
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 1, kernel_size=1),
+            nn.Upsample(size=(512, 512), mode='bilinear', align_corners=True)
         )
+
 
     def forward(self, x):
         x = self.up1(x)
