@@ -134,7 +134,7 @@ def train(args):
                 
                 pred = [pred_label , pred_box , pred_center]
                 gt = [gt_label , gt_box , gt_center]
-                det_loss , losses = det_criterion(pred , gt)
+                det_loss , losses = det_criterion(pred , gt , weight=[0.5 , 1 , 0.5])
                 det_loss_total+=det_loss
             if run:
                 run["detection_total_loss/batch"].append(det_loss.item())

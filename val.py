@@ -60,8 +60,8 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
             targets_det = []
 
             for b in range(pred_box.size(0)):
-                stride = args.img_size // 8  # or save grid_size as model attribute later
-                
+                stride = (args.img_size // 8) if args else 64
+
                 boxes = pred_box[b].permute(1, 2, 0).reshape(-1, 4) * stride
                 scores = pred_center[b].permute(1, 2, 0).reshape(-1)
 
