@@ -15,127 +15,124 @@ from train_utils import interleaving , lr_scheduler
 from val import validate_one_epoch
 
 def train(args):
-    
     run = None
     if args.neptune:
         run = neptune.init_run(
-        project="ham82/RoadSeg-VehicleDet",
-        api_token=NEPTUNE_API_TOKEN,
-        )  
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    seg_dataset= RoadSegDataset(dataset_dir=args.seg_data_dir , 
-                                                        mode = 'train' , 
-                                                        img_size = args.img_size,
-                                                        target_len=args.dataset_len)
-    
-    det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir , 
-                                                         mode = "train" , 
-                                                         img_size = args.img_size , 
-                                                         target_len= len(seg_dataset) , 
-                                                         grid_size = 8)
+            project="ham82/RoadSeg-VehicleDet",
+            api_token=NEPTUNE_API_TOKEN,
+        )
 
-    seg_loader = DataLoader(dataset = seg_dataset ,
-                                                    batch_size = args.seg_train_batch,
-                                                    shuffle = True , 
-                                                    num_workers = args.num_workers , 
-                                                    pin_memory=True, 
-                                                    persistent_workers=True)
-    
-    det_loader = DataLoader(dataset = det_dataset ,
-                                                    batch_size = args.det_train_batch,
-                                                    shuffle = True , 
-                                                    num_workers = args.num_workers , 
-                                                    pin_memory=True, 
-                                                    persistent_workers=True)
-    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # Data loaders
+    seg_dataset = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='train', img_size=args.img_size, target_len=args.dataset_len)
+    det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="train", img_size=args.img_size, target_len=len(seg_dataset), grid_size=64)
+
+    seg_loader = DataLoader(seg_dataset, batch_size=args.seg_train_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+    det_loader = DataLoader(det_dataset, batch_size=args.det_train_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+
     seg_val = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='val', img_size=args.img_size)
-    det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=8)
+    det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=64)
 
     seg_val_loader = DataLoader(seg_val, batch_size=args.val_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
     det_val_loader = DataLoader(det_val, batch_size=args.val_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
-    
+
     print(f"There are {len(seg_dataset)} segmentation training samples")
     print(f"There are {len(det_dataset)} detection training samples")
     print(f"There are {len(seg_val)} segmentation validation samples")
     print(f"There are {len(det_val)} detection validation samples")
-    
-    model = SegDet(img_size = args.img_size,
-                                small_patch_size = args.small_patch,
-                                large_patch_size = args.large_patch,
-                                backbone = args.backbone,
-                                sam_ckpt_path=args.sam_ckpt , 
-                                swin_det_path= args.swin_det_ckpt ,
-                                swin_seg_path= args.swin_seg_ckpt, 
-                                backbone_freeze = args.freeze_backbone)
-    
+
+    model = SegDet(
+        img_size=args.img_size,
+        small_patch_size=args.small_patch,
+        large_patch_size=args.large_patch,
+        backbone=args.backbone,
+        sam_ckpt_path=args.sam_ckpt,
+        swin_det_path=args.swin_det_ckpt,
+        swin_seg_path=args.swin_seg_ckpt,
+        backbone_freeze=args.freeze_backbone
+    )
+
     model.to(device)
-    
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Training {trainable_params:,} out of {total_params:,} parameters "
-        f"({100 * trainable_params / total_params:.2f}%)")
-    
-    
+    print(f"Training {trainable_params:,} out of {total_params:,} parameters ({100 * trainable_params / total_params:.2f}%)")
+
     optimizer = torch.optim.AdamW(
-                                                            filter(lambda p: p.requires_grad, model.parameters()), 
-                                                            lr=args.lr,
-                                                            weight_decay=args.weight_decay,
-                                                            betas=(args.beta1, args.beta2))
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        betas=(args.beta1, args.beta2)
+    )
     scaler = GradScaler()
-    
+    scheduler = lr_scheduler(optimizer, scheduler=args.lr_scheduler)
+
     saving_loss = float('inf')
-    model.train()
-    scheduler = lr_scheduler(optimizer , scheduler = args.lr_scheduler)
+
     for epoch in tqdm(range(args.epochs)):
-        
+        model.train()
+
         seg_loss_total = 0
         det_loss_total = 0
-        total = 0
-        i = 0
-        for (seg_batch , det_batch) in tqdm(zip(seg_loader , det_loader)):
-            optimizer.zero_grad()
-            seg_img , mask = seg_batch
-            seg_img , gt_mask = seg_img.to(device) , mask.to(device)
-            
-            model = interleaving(model , mode = 'seg')
-            
-            with torch.amp.autocast(device_type=device):
+
+        ################### SEGMENTATION PHASE ###################
+        optimizer.zero_grad()
+        for seg_batch in tqdm(seg_loader, desc=f"Epoch {epoch+1} - Segmentation Phase"):
+            seg_img, mask = seg_batch
+            seg_img, gt_mask = seg_img.to(device), mask.to(device)
+
+            model = interleaving(model, mode='seg')
+
+            with autocast(device_type=device):
                 output = model(seg_img)
 
-                class_logits = output["mask_logits"]  # [B, 100, 1]
-                masks = output["masks"].squeeze(1)    # [B, 100, 512, 512] after fix
+                class_logits = output["mask_logits"]
+                masks = output["masks"].squeeze(1)
 
-                best_queries = class_logits.squeeze(-1).sigmoid().max(dim=1)[1]  # [B]
-                
+                best_queries = class_logits.squeeze(-1).sigmoid().max(dim=1)[1]
                 batch_size = masks.size(0)
-                selected_masks = torch.stack([masks[b, best_queries[b]] for b in range(batch_size)], dim=0)  # [B, 512, 512]
+                selected_masks = torch.stack([masks[b, best_queries[b]] for b in range(batch_size)], dim=0)
+                selected_masks = selected_masks.unsqueeze(1)
 
-                selected_masks = selected_masks.unsqueeze(1)  # [B, 1, 512, 512]
                 seg_loss = seg_criterion(selected_masks, gt_mask)
-                seg_loss_total += seg_loss
+                seg_loss_total += seg_loss.item()
 
             if run:
                 run["segmentation_loss/batch"].append(seg_loss.item())
 
-                
-            det_img , target = det_batch
+            scaler.scale(seg_loss).backward()
+
+        scaler.unscale_(optimizer)
+        clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
+
+        if args.lr_scheduler in ["onecycle", "cosine", "cosine_warmup"]:
+            scheduler.step()
+
+        ################### DETECTION PHASE ###################
+        optimizer.zero_grad()
+        for det_batch in tqdm(det_loader, desc=f"Epoch {epoch+1} - Detection Phase"):
+            det_img, target = det_batch
             det_img = det_img.to(device)
-            
-            model = interleaving(model , mode = 'det')
-            cls , bbox , center = target["cls"] , target["bbox"] , target["centerness"]
-            gt_box , gt_label , gt_center = bbox.to(device) , cls.to(device) , center.to(device)
-            
-            with torch.amp.autocast(device_type=device):
+            cls, bbox, center = target["cls"], target["bbox"], target["centerness"]
+            gt_box, gt_label, gt_center = bbox.to(device), cls.to(device), center.to(device)
+
+            model = interleaving(model, mode='det')
+
+            with autocast(device_type=device):
                 output = model(det_img)
                 pred_box = output["bbox"]
                 pred_label = output["cls_logits"]
                 pred_center = output["centerness"]
-                
-                pred = [pred_label , pred_box , pred_center]
-                gt = [gt_label , gt_box , gt_center]
-                det_loss , losses = det_criterion(pred , gt , weight=[0.5 , 1 , 0.5])
-                det_loss_total+=det_loss
+
+                pred = [pred_label, pred_box, pred_center]
+                gt = [gt_label, gt_box, gt_center]
+
+                det_loss, losses = det_criterion(pred, gt, weight=[0.5, 1, 0.5])
+                det_loss_total += det_loss.item()
+
             if run:
                 run["detection_total_loss/batch"].append(det_loss.item())
                 run["classification_loss/batch"].append(losses[0].item())
@@ -143,50 +140,47 @@ def train(args):
                 run["center_loss/batch"].append(losses[2].item())
                 current_lr = scheduler.get_last_lr()[0]
                 run["learning_rate"].append(current_lr)
-            total_loss = 2 * seg_loss + det_loss
-            total+=total_loss
-            scaler.scale(total_loss).backward()
 
-            scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_norm=1.0)  # ← this line applies gradient clipping
+            scaler.scale(det_loss).backward()
 
-            scaler.step(optimizer)
-            scaler.update()
-            if args.lr_scheduler in ["onecycle", "cosine", "cosine_warmup"]:
-                scheduler.step()
-                
-            if run:
-                run["total_loss/batch"].append(total_loss.item())
-                
+        scaler.unscale_(optimizer)
+        clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
+
         if args.lr_scheduler not in ["onecycle", "cosine"]:
             scheduler.step()
-    
-        total_seg = seg_loss_total / len(seg_loader)
-        total_det = det_loss / len(det_loader)
-        total = total / args.dataset_len
-        run["segmentation_loss/epoch"].append(total_seg.item())
-        run["detection_loss/epoch"].append(total_det.item())
-        run["Total_loss/epoch"].append(total.item())
-        
-        if total < saving_loss:
-            saving_loss = total     
-            checkpoint = {
-                                    "epoch": epoch,
-                                    "model_state": model.state_dict(),
-                                    "optimizer_state": optimizer.state_dict(),
-                                    "scaler_state": scaler.state_dict(),      
-                                    "scheduler_state": scheduler.state_dict(),   
-                                    "saving_loss": total                   
-                                }
 
-            os.makedirs(args.out_dir, exist_ok=True)    
+        ################### END OF EPOCH ###################
+
+        avg_seg_loss = seg_loss_total / len(seg_loader)
+        avg_det_loss = det_loss_total / len(det_loader)
+        total_loss = avg_seg_loss + avg_det_loss
+
+        if run:
+            run["segmentation_loss/epoch"].append(avg_seg_loss)
+            run["detection_loss/epoch"].append(avg_det_loss)
+            run["Total_loss/epoch"].append(total_loss)
+
+        if total_loss < saving_loss:
+            saving_loss = total_loss
+            checkpoint = {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scaler_state": scaler.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "saving_loss": total_loss
+            }
+            os.makedirs(args.out_dir, exist_ok=True)
             torch.save(checkpoint, os.path.join(args.out_dir, f"checkpoint_epoch_{epoch+1}.pt"))
-        
-        print("#######################VALIDATION#######################")
-        validate_one_epoch(model , seg_val_loader , det_val_loader , device , run = run , args = args) 
-            
-    if run: 
+
+        print("####################### VALIDATION #######################")
+        validate_one_epoch(model, seg_val_loader, det_val_loader, device, run=run, args=args)
+
+    if run:
         run.stop()
+
                     
    
 if __name__ == "__main__":
