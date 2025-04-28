@@ -1,12 +1,10 @@
 import torch
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
+import torch.nn as nn
 import torchmetrics
 import json
 import os
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from criterion import det_criterion, seg_criterion
-from data.dataloader import RoadSegDataset , VehicleDetDataset
-from torch.utils.data import DataLoader
-from model.model import SegDet
 
 @torch.no_grad()
 def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=None):
@@ -62,13 +60,22 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
             targets_det = []
 
             for b in range(pred_box.size(0)):
-                boxes = pred_box[b].permute(1, 2, 0).reshape(-1, 4)
+                stride = args.img_size // 8  # or save grid_size as model attribute later
+                
+                boxes = pred_box[b].permute(1, 2, 0).reshape(-1, 4) * stride
                 scores = pred_center[b].permute(1, 2, 0).reshape(-1)
+
+                cx, cy, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+                x1 = cx - w / 2
+                y1 = cy - h / 2
+                x2 = cx + w / 2
+                y2 = cy + h / 2
+                boxes = torch.stack([x1, y1, x2, y2], dim=-1)
 
                 labels = pred_label[b].softmax(dim=0)
                 labels = labels.permute(1, 2, 0).reshape(-1, 2)
-                labels = labels.argmax(dim=-1)  # [4096] with 0 or 1
-                
+                labels = labels.argmax(dim=-1)
+
                 mask = scores > 0.5
                 boxes = boxes[mask]
                 scores = scores[mask]
@@ -80,19 +87,24 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
                     "labels": labels,
                 })
 
+                # GT
+                boxes_gt = gt_box[b].permute(1, 2, 0).reshape(-1, 4) * stride
+                cx_gt, cy_gt, w_gt, h_gt = boxes_gt[:, 0], boxes_gt[:, 1], boxes_gt[:, 2], boxes_gt[:, 3]
+                x1_gt = cx_gt - w_gt / 2
+                y1_gt = cy_gt - w_gt / 2
+                x2_gt = cx_gt + w_gt / 2
+                y2_gt = cy_gt + w_gt / 2
+                boxes_gt = torch.stack([x1_gt, y1_gt, x2_gt, y2_gt], dim=-1)
 
-                boxes_gt = gt_box[b].permute(1, 2, 0).reshape(-1, 4)
                 labels_gt = gt_cls[b].reshape(-1)
 
-                mask_gt = labels_gt >= 0
-
                 targets_det.append({
-                    "boxes": boxes_gt[mask_gt],
-                    "labels": labels_gt[mask_gt],
+                    "boxes": boxes_gt,
+                    "labels": labels_gt,
                 })
 
-
             detection_metric.update(preds_det, targets_det)
+
 
             det_loss, _ = det_criterion([pred_label, pred_box, pred_center], [gt_cls, gt_box, gt_center])
             det_loss_total += det_loss.item()
@@ -109,14 +121,14 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
         run["validation/det_loss"].append(avg_det_loss)
         run["validation/miou"].append(mean_iou)
         run["validation/map"].append(mean_ap)
-        
+
     results = {
-            "segmentation_loss": avg_seg_loss,
-            "detection_loss": avg_det_loss,
-            "mean_iou": mean_iou.item() if isinstance(mean_iou, torch.Tensor) else mean_iou,
-            "mean_average_precision": mean_ap
-        }
-    print("results" , results)
+        "segmentation_loss": avg_seg_loss,
+        "detection_loss": avg_det_loss,
+        "mean_iou": mean_iou.item() if isinstance(mean_iou, torch.Tensor) else mean_iou,
+        "mean_average_precision": mean_ap
+    }
+    print("results:", results)
 
     if args:
         os.makedirs(args.out_dir, exist_ok=True)
@@ -129,6 +141,7 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
     return avg_seg_loss, avg_det_loss, mean_iou, mean_ap
 
 
+
 if __name__ == "__main__":
     import torch
     from torch.utils.data import DataLoader
@@ -139,8 +152,8 @@ if __name__ == "__main__":
     if __name__ == "__main__":
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        seg_dataset = RoadSegDataset(dataset_dir="/home/hasanmog/datasets/dataset_reduced", mode='val', img_size=512)
-        det_dataset = VehicleDetDataset(dataset_dir="/home/hasanmog/datasets/vedai", mode='val', img_size=512, grid_size=64)
+        seg_dataset = RoadSegDataset(dataset_dir="/content/drive/MyDrive/AUB_Masters/Neural_Networks/dataset_reduced", mode='val', img_size=512)
+        det_dataset = VehicleDetDataset(dataset_dir="/content/drive/MyDrive/AUB_Masters/Neural_Networks/vedai", mode='val', img_size=512, grid_size=8)
 
         seg_loader = DataLoader(seg_dataset, batch_size=2, shuffle=False, num_workers=0)
         det_loader = DataLoader(det_dataset, batch_size=2, shuffle=False, num_workers=0)
@@ -149,7 +162,7 @@ if __name__ == "__main__":
             img_size=512,
             small_patch_size=8,
             large_patch_size=16,
-            backbone="SAM",
+            backbone="SWIN",
             sam_ckpt_path=None,
             swin_det_path=None,
             swin_seg_path=None,
@@ -158,7 +171,7 @@ if __name__ == "__main__":
         model.to(device)
 
         # Load checkpoint
-        checkpoint_path = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/results/checkpoint_epoch_1.pt"  # <<< PUT your path here
+        checkpoint_path = "/content/drive/MyDrive/AUB_Masters/Neural_Networks/results/checkpoint_epoch_1.pt"  # <<< PUT your path here
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint["model_state"])
 

@@ -43,6 +43,13 @@ def lr_scheduler(optimizer, scheduler: str, **kwargs):
             T_max=kwargs.get("T_max", 50),
             eta_min=kwargs.get("eta_min", 0)
         )
+    elif scheduler == "cosine_warmup":
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=kwargs.get("T_0", 10),        # Number of iterations for the first restart
+            T_mult=kwargs.get("T_mult", 2),    # Multiply T_0 by this after each restart
+            eta_min=kwargs.get("eta_min", 0)   # Minimum LR
+        )
     elif scheduler == "reduce_on_plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -67,6 +74,7 @@ def lr_scheduler(optimizer, scheduler: str, **kwargs):
     else:
         raise ValueError(
             f"Unknown scheduler: {scheduler}. Choose from "
-            "[step, multistep, cosine, reduce_on_plateau, onecycle, exponential]"
+            "[step, multistep, cosine, cosine_warmup, reduce_on_plateau, onecycle, exponential]"
         )
+
         

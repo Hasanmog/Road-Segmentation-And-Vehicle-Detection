@@ -5,6 +5,7 @@ import argparse
 import neptune
 from tqdm import tqdm
 from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
 from torch.amp import autocast,GradScaler
 from neptune_key import NEPTUNE_API_TOKEN
 from model.model import SegDet 
@@ -145,9 +146,13 @@ def train(args):
             total_loss = 2 * seg_loss + det_loss
             total+=total_loss
             scaler.scale(total_loss).backward()
+
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(model.parameters(), max_norm=1.0)  # ← this line applies gradient clipping
+
             scaler.step(optimizer)
             scaler.update()
-            if args.lr_scheduler in ["onecycle", "cosine"]:
+            if args.lr_scheduler in ["onecycle", "cosine", "cosine_warmup"]:
                 scheduler.step()
                 
             if run:
