@@ -3,7 +3,6 @@ from model.encoder.img_encoder.img_encoder import Image_Encoders_SAM
 from model.encoder.cross_attention.cross_attn import CrossAttnBlock
 from model.encoder.img_encoder_2.img_encoder import Image_Encoders_Swin
 
-
 class MultiScaleFusion(nn.Module):
     def __init__(self , 
                  img_size: int = 512 ,
@@ -58,7 +57,6 @@ class MultiScaleFusion(nn.Module):
             B1, C1, H1, W1 = local_feat.shape
             B2, C2, H2, W2 = global_feat.shape
 
-            # Flatten only if the tensor is 4D (i.e., [B, C, H, W])
             if len(local_feat.shape) == 4:
                 local_flatten = local_feat.flatten(2).transpose(1, 2)  # [B, H*W, C]
                 global_flatten = global_feat.flatten(2).transpose(1, 2)  # [B, H*W, C]
@@ -66,20 +64,40 @@ class MultiScaleFusion(nn.Module):
                 local_flatten = local_feat
                 global_flatten = global_feat
         else:
-            # apply flattening or skip based on tensor shape
             if len(local_feat.shape) == 4:
-                local_flatten = local_feat.flatten(2).transpose(1, 2)  # [B, H*W, C]
-                global_flatten = global_feat.flatten(2).transpose(1, 2)  # [B, H*W, C]
+                local_flatten = local_feat.flatten(2).transpose(1, 2)
+                global_flatten = global_feat.flatten(2).transpose(1, 2)
             else:
                 local_flatten = local_feat
                 global_flatten = global_feat
             
-            # Downsample from 768 to 256 if necessary
-            local_flatten = self.local_downsample(local_flatten)  # Apply downsampling (768 -> 256)
-            global_flatten = self.global_downsample(global_flatten)  # Apply downsampling (768 -> 256)
-        cross_feat = self.multi_scale([local_flatten, global_flatten])  # Process through the multi-scale block
+            local_flatten = self.local_downsample(local_flatten)
+            global_flatten = self.global_downsample(global_flatten)
 
-        return cross_feat
+        # Process through cross-attention block
+        cross_feat = self.multi_scale([local_flatten, global_flatten])  # (local_cross, global_cross)
+
+        # Split local and global cross attention
+        local_cross, global_cross = cross_feat
+
+        # Reshape everything back to [B, C, H, W]
+        B0, N0, C0 = local_flatten.shape
+        H0 = W0 = int(N0 ** 0.5)
+        assert H0 * W0 == N0, "local_flatten N is not a perfect square."
+        local_feat = local_flatten.reshape(B0, H0, W0, C0).permute(0, 3, 1, 2)  # [B, C, H, W]
+
+        B1, N1, C1 = local_cross.shape
+        H1 = W1 = int(N1 ** 0.5)
+        assert H1 * W1 == N1, "local_cross N is not a perfect square."
+        det_feat = local_cross.reshape(B1, H1, W1, C1).permute(0, 3, 1, 2)  # [B, C, H, W]
+
+        B2, N2, C2 = global_cross.shape
+        H2 = W2 = int(N2 ** 0.5)
+        assert H2 * W2 == N2, "global_cross N is not a perfect square."
+        seg_feat = global_cross.reshape(B2, H2, W2, C2).permute(0, 3, 1, 2)  # [B, C, H, W]
+
+        return det_feat, seg_feat, local_feat
+
 
 
 

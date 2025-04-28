@@ -23,22 +23,24 @@ class Image_Encoders_Swin(nn.Module):
             img_size=img_size,
             patch_size=patch_small_size,
             window_size=self.window_size(img_size, patch_small_size),
-            num_classes=0
+            num_classes=0,
+            ape = True ,  #positional embedding
         )
         
         self.img_encoder_large = SwinTransformerV2(
             img_size=img_size,
             patch_size=patch_large_size,
             window_size=self.window_size(img_size, patch_large_size),
-            num_classes=0
+            num_classes=0,
+            ape = True #positional embedding
         )
         
         if ckpt_path_small is not None and ckpt_path_large is not None:
             self.load_pretrained_weights(ckpt_path_small, ckpt_path_large, freeze)
      
     def load_pretrained_weights(self, ckpt_path_small: str, ckpt_path_large: str, freeze: bool):
-        ckpt_small = torch.load(ckpt_path_small, map_location='cuda')
-        ckpt_large = torch.load(ckpt_path_large, map_location='cuda')
+        ckpt_small = torch.load(ckpt_path_small, map_location='cpu')
+        ckpt_large = torch.load(ckpt_path_large, map_location='cpu')
         self.img_encoder_small.load_state_dict(ckpt_small, strict=False)
         self.img_encoder_large.load_state_dict(ckpt_large, strict=False)
 
@@ -48,7 +50,7 @@ class Image_Encoders_Swin(nn.Module):
 
     def apply_freezing(self, encoder):
         for param in encoder.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
 
         for param in encoder.patch_embed.parameters():
             param.requires_grad = True
@@ -72,26 +74,12 @@ class Image_Encoders_Swin(nn.Module):
         global_features = self.img_encoder_large(x)
         return local_features, global_features
 
+if __name__ == '__main__':
+
+    dummy = torch.randn((1 , 3 , 512 , 512))
+
+    model = Image_Encoders_Swin()
     
-if __name__ == "__main__":
+    output = model(dummy)
 
-    # Create dummy input (batch of 2 images, 3 channels, 512x512)
-    dummy_input = torch.randn(2, 3, 512, 512)
-    ckpt_path_small = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/weights/mask_rcnn_swin_tiny_patch4_window7_1x.pth"
-    ckpt_path_large = "/home/hasanmog/AUB_Masters/projects/Road-Segmentation-And-Vehicle-Detection/weights/upernet_swin_tiny_patch4_window7_512x512.pth"
-    # Initialize the encoder
-    encoder = Image_Encoders_Swin(
-        img_size=512,
-        patch_small_size=8,
-        patch_large_size=16,
-        ckpt_path_small=ckpt_path_small,
-        ckpt_path_large=ckpt_path_large, 
-        freeze=True
-    )
-
-    # Pass dummy input through the encoder
-    local_features, global_features = encoder(dummy_input)
-
-    # Print output shapes
-    print(f"Local Features Shape: {local_features.shape}")
-    print(f"Global Features Shape: {global_features.shape}")
+    print(output[0].shape , output[1].shape) # torch.Size([1, 64, 768]) torch.Size([1, 16, 768])

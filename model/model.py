@@ -39,29 +39,17 @@ class SegDet(nn.Module):
         
         
     def forward(self, x):
-        local_cross, global_cross = self.encoder(x)
+        det_feat , seg_feat , local_feat = self.encoder(x)
 
-        B1, N1, C1 = local_cross.shape
-        H1 = W1 = int(N1 ** 0.5)
-        det_feat = local_cross.reshape(B1, H1, W1, C1).permute(0, 3, 1, 2)
-
-        B2, N2, C2 = global_cross.shape
-        H2 = W2 = int(N2 ** 0.5)
-        seg_feat = global_cross.reshape(B2, H2, W2, C2).permute(0, 3, 1, 2)
-
-        masks = self.seg_head(seg_feat)
-        detections = self.det_head(det_feat)
-
-        bbox = detections[:, 0:4, :, :]                # [B, 4, H, W]
-        obj_score = detections[:, 4:5, :, :]           # [B, 1, H, W]
-        class_score = detections[:, 5:, :, :]          # [B, 2, H,_
-
+        mask_logits , masks = self.seg_head(seg_feat , local_feat)
+        cls_logits , bbox , centerness = self.det_head(det_feat)
 
         results = {
-            "masks": masks,
-            "bbox": bbox,
-            "obj_score": obj_score,
-            "class_score": class_score
+            "mask_logits" : mask_logits ,
+            "masks" : masks , 
+            "cls_logits" : cls_logits , 
+            "bbox" : bbox , 
+            "centerness" : centerness     
         }
 
         return results

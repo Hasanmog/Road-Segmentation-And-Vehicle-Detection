@@ -35,20 +35,20 @@ class RoadSegDataset(Dataset):
         self.mode = mode
         self.img_size = img_size
 
-        # Basic transforms
+        
         self.base_transform = T.Compose([
             T.Resize((img_size, img_size)),
             T.ToTensor(),
         ])
 
-        # Augmentations for training
+        
         self.augment = T.RandomApply([
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
             T.RandomHorizontalFlip(p=1.0),
             T.RandomRotation(degrees=15)
         ], p=0.8)
 
-        # Normalization for image only
+        
         self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
@@ -64,19 +64,19 @@ class RoadSegDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         mask = Image.open(mask_path).convert("L")
 
-        # Apply base resize first
+        
         image = self.base_transform(image)
         mask = self.base_transform(mask)
 
         if self.mode == "train" and idx >= self.true_len:
-            # Apply the same random seed to both image and mask transforms
+            
             seed = random.randint(0, 99999)
             torch.manual_seed(seed)
             image = self.augment(image)
             torch.manual_seed(seed)
             mask = self.augment(mask)
 
-        # Normalize image only
+        
         image = self.normalize(image)
 
         return image, mask.float()
@@ -103,7 +103,7 @@ class VehicleDetDataset(Dataset):
         with open(os.path.join(self.dir, self.anno[0]), "r") as f:
             self.annotations = json.load(f)
 
-        self.id_map = {1: 0, 2: 1}  # Map category_id to 0/1
+        self.id_map = {1: 0, 2: 1}
 
         self.transform = A.Compose([
             A.Resize(img_size, img_size),
@@ -125,16 +125,13 @@ class VehicleDetDataset(Dataset):
         image_name = self.imgs[true_idx]
         image_path = os.path.join(self.dir, image_name)
         raw_image = np.array(Image.open(image_path).convert("RGB"))
-        original_h, original_w = raw_image.shape[:2]
 
-        # Get image ID from annotations
         image_id = None
         for img_info in self.annotations["images"]:
             if img_info["file_name"] == image_name:
                 image_id = img_info["id"]
                 break
 
-        # Load COCO-format annotations
         anns = [ann for ann in self.annotations["annotations"]
                 if ann["image_id"] == image_id and ann["category_id"] in self.id_map]
 
@@ -145,14 +142,12 @@ class VehicleDetDataset(Dataset):
             bboxes.append(bbox)
             category_ids.append(self.id_map[ann["category_id"]])
 
-        # Apply transform (only on training or if augmented sample)
         if self.mode == "train" and len(bboxes) > 0:
             transformed = self.transform(image=raw_image, bboxes=bboxes, category_ids=category_ids)
             image = transformed["image"]
             bboxes = transformed["bboxes"]
             labels = transformed["category_ids"]
         else:
-            # Only resize + normalize + toTensor
             no_aug = A.Compose([
                 A.Resize(self.img_size, self.img_size),
                 A.Normalize(mean=(0.485, 0.456, 0.406),
@@ -165,11 +160,10 @@ class VehicleDetDataset(Dataset):
             bboxes = transformed["bboxes"]
             labels = transformed["category_ids"]
 
-        # Create grid targets
         stride = self.img_size / self.grid_size
-        obj_target = torch.zeros((self.grid_size, self.grid_size))
-        cls_target = torch.zeros((self.grid_size, self.grid_size))
-        bbox_target = torch.zeros((4, self.grid_size, self.grid_size))  # cx, cy, w, h
+        cls_target = torch.zeros((self.grid_size, self.grid_size), dtype=torch.long)
+        bbox_target = torch.zeros((4, self.grid_size, self.grid_size))
+        centerness_target = torch.zeros((1, self.grid_size, self.grid_size))
 
         for bbox, label in zip(bboxes, labels):
             x, y, w, h = bbox
@@ -181,19 +175,19 @@ class VehicleDetDataset(Dataset):
             if gi < 0 or gj < 0 or gi >= self.grid_size or gj >= self.grid_size:
                 continue
 
-            cx_norm = (cx / stride) - gi
-            cy_norm = (cy / stride) - gj
-            w_norm = w / stride
-            h_norm = h / stride
+            l = cx - x
+            t = cy - y
+            r = (x + w) - cx
+            b = (y + h) - cy
 
-            obj_target[gj, gi] = 1
+            bbox_target[:, gj, gi] = torch.tensor([l / stride, t / stride, r / stride, b / stride])
             cls_target[gj, gi] = label
-            bbox_target[:, gj, gi] = torch.tensor([cx_norm, cy_norm, w_norm, h_norm])
+            centerness_target[0, gj, gi] = (min(l, r) * min(t, b)) / (max(l, r) * max(t, b) + 1e-6)
 
         target = {
-            "obj": obj_target,
-            "labels": cls_target,
-            "boxes": bbox_target,
+            "cls": cls_target,
+            "bbox": bbox_target,
+            "centerness": centerness_target,
             "image_id": image_id
         }
 
