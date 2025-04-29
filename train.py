@@ -77,7 +77,6 @@ def train(args):
         det_loss_total = 0
 
         ################### SEGMENTATION PHASE ###################
-        optimizer.zero_grad()
         for seg_batch in tqdm(seg_loader, desc=f"Epoch {epoch+1} - Segmentation Phase"):
             seg_img, mask = seg_batch
             seg_img, gt_mask = seg_img.to(device), mask.to(device)
@@ -102,17 +101,19 @@ def train(args):
                 run["segmentation_loss/batch"].append(seg_loss.item())
 
             scaler.scale(seg_loss).backward()
-
-        scaler.unscale_(optimizer)
-        clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
-
-        if args.lr_scheduler in ["onecycle", "cosine", "cosine_warmup"]:
-            scheduler.step()
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            
+            if args.lr_scheduler in ["onecycle", "cosine", "cosine_warmup"]:
+                scheduler.step()
+                if run:
+                    current_lr = scheduler.get_last_lr()[0]
+                    run["learning_rate"].append(current_lr)  
+            optimizer.zero_grad()
 
         ################### DETECTION PHASE ###################
-        optimizer.zero_grad()
         for det_batch in tqdm(det_loader, desc=f"Epoch {epoch+1} - Detection Phase"):
             det_img, target = det_batch
             det_img = det_img.to(device)
@@ -132,7 +133,7 @@ def train(args):
 
                 det_loss, losses = det_criterion(pred, gt, weight=[0.5, 1, 0.5])
                 det_loss_total += det_loss.item()
-
+            
             if run:
                 run["detection_total_loss/batch"].append(det_loss.item())
                 run["classification_loss/batch"].append(losses[0].item())
@@ -140,16 +141,19 @@ def train(args):
                 run["center_loss/batch"].append(losses[2].item())
                 current_lr = scheduler.get_last_lr()[0]
                 run["learning_rate"].append(current_lr)
-
+                
             scaler.scale(det_loss).backward()
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+            if args.lr_scheduler not in ["onecycle", "cosine" , "cosine_warmup"]:
+                scheduler.step()
+                current_lr = scheduler.get_last_lr()[0]
+                run["learning_rate"].append(current_lr)
 
-        scaler.unscale_(optimizer)
-        clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
-
-        if args.lr_scheduler not in ["onecycle", "cosine"]:
-            scheduler.step()
+        
 
         ################### END OF EPOCH ###################
 
