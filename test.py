@@ -37,7 +37,7 @@ seg_head = Seg_Head()
 det_head = Det_Head()
 
 det , seg , local = model(dummy_input)
-
+print("local" , local.shape)
 masks , logits = seg_head(seg , local)
 
 cls , bbox , center = det_head(det)

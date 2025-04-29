@@ -56,14 +56,17 @@ class SegDet(nn.Module):
         self.seg_head = Seg_Head()
         
         self.det_head = Det_Head()
-        self.upsample = Upsample(dim , dim , local_feat_up)
+        self.upsample_local = Upsample(dim, dim, local_feat_up)
+        self.upsample_det = Upsample(dim, dim, local_feat_up)
+
         
         
     def forward(self, x):
         det_feat, seg_feat, local_feat = self.encoder(x)
 
         
-        local_feat_up = self.upsample(local_feat)
+        local_feat_up = self.upsample_local(local_feat)
+        det_feat = self.upsample_det(det_feat)
 
         mask_logits, masks = self.seg_head(seg_feat, local_feat_up)
         cls_logits, bbox, centerness = self.det_head(det_feat)
