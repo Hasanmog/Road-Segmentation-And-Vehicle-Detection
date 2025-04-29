@@ -6,12 +6,12 @@ import neptune
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-from torch.amp import autocast,GradScaler
+from torch.amp import autocast, GradScaler
 from neptune_key import NEPTUNE_API_TOKEN
 from model.model import SegDet 
-from data.dataloader import RoadSegDataset , VehicleDetDataset
-from criterion import seg_criterion , det_criterion
-from train_utils import interleaving , lr_scheduler
+from data.dataloader import RoadSegDataset, VehicleDetDataset
+from criterion import seg_criterion, det_criterion
+from train_utils import interleaving, lr_scheduler
 from val import validate_one_epoch
 
 def train(args):
@@ -34,8 +34,8 @@ def train(args):
     seg_val = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='val', img_size=args.img_size)
     det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=64)
 
-    seg_val_loader = DataLoader(seg_val, batch_size=args.val_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
-    det_val_loader = DataLoader(det_val, batch_size=args.val_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+    seg_val_loader = DataLoader(seg_val, batch_size=args.val_batch, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
+    det_val_loader = DataLoader(det_val, batch_size=args.val_batch, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
 
     print(f"There are {len(seg_dataset)} segmentation training samples")
     print(f"There are {len(det_dataset)} detection training samples")
@@ -52,12 +52,7 @@ def train(args):
         swin_seg_path=args.swin_seg_ckpt,
         backbone_freeze=args.freeze_backbone
     )
-
     model.to(device)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Training {trainable_params:,} out of {total_params:,} parameters ({100 * trainable_params / total_params:.2f}%)")
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -68,15 +63,41 @@ def train(args):
     scaler = GradScaler()
     scheduler = lr_scheduler(optimizer, scheduler=args.lr_scheduler)
 
+    start_epoch = 0
     saving_loss = float('inf')
 
-    for epoch in tqdm(range(args.epochs)):
+    # -------------------- Load checkpoint if any --------------------
+    if args.resume_checkpoint:
+        checkpoint = torch.load(args.resume_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state'])
+        optimizer.load_state_dict(checkpoint['optimizer_state'])
+        scaler.load_state_dict(checkpoint['scaler_state'])
+        scheduler.load_state_dict(checkpoint['scheduler_state'])
+        start_epoch = checkpoint['epoch'] + 1
+        saving_loss = checkpoint['saving_loss']
+        print(f"Resumed training from epoch {start_epoch}")
+
+    if args.validate_only_checkpoint:
+        checkpoint = torch.load(args.validate_only_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state'])
+        print("Validating checkpoint only...")
+        validate_one_epoch(model, seg_val_loader, det_val_loader, device, run=run, args=args)
+        if run:
+            run.stop()
+        return
+
+    # -------------------- Normal training loop --------------------
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Training {trainable_params:,} out of {total_params:,} parameters ({100 * trainable_params / total_params:.2f}%)")
+
+    for epoch in tqdm(range(start_epoch, args.epochs)):
         model.train()
 
         seg_loss_total = 0
         det_loss_total = 0
 
-        ################### SEGMENTATION PHASE ###################
+        # --- Segmentation Phase ---
         for seg_batch in tqdm(seg_loader, desc=f"Epoch {epoch+1} - Segmentation Phase"):
             seg_img, mask = seg_batch
             seg_img, gt_mask = seg_img.to(device), mask.to(device)
@@ -85,7 +106,6 @@ def train(args):
 
             with autocast(device_type=device):
                 output = model(seg_img)
-
                 class_logits = output["mask_logits"]
                 masks = output["masks"].squeeze(1)
 
@@ -105,15 +125,15 @@ def train(args):
             clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-            
+            optimizer.zero_grad()
+
             if args.lr_scheduler in ["onecycle", "cosine", "cosine_warmup"]:
                 scheduler.step()
                 if run:
                     current_lr = scheduler.get_last_lr()[0]
-                    run["learning_rate"].append(current_lr)  
-            optimizer.zero_grad()
+                    run["learning_rate"].append(current_lr)
 
-        ################### DETECTION PHASE ###################
+        # --- Detection Phase ---
         for det_batch in tqdm(det_loader, desc=f"Epoch {epoch+1} - Detection Phase"):
             det_img, target = det_batch
             det_img = det_img.to(device)
@@ -133,7 +153,7 @@ def train(args):
 
                 det_loss, losses = det_criterion(pred, gt, weight=[0.5, 1, 0.5])
                 det_loss_total += det_loss.item()
-            
+
             if run:
                 run["detection_total_loss/batch"].append(det_loss.item())
                 run["classification_loss/batch"].append(losses[0].item())
@@ -141,22 +161,20 @@ def train(args):
                 run["center_loss/batch"].append(losses[2].item())
                 current_lr = scheduler.get_last_lr()[0]
                 run["learning_rate"].append(current_lr)
-                
+
             scaler.scale(det_loss).backward()
             scaler.unscale_(optimizer)
             clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-            if args.lr_scheduler not in ["onecycle", "cosine" , "cosine_warmup"]:
+
+            if args.lr_scheduler not in ["onecycle", "cosine", "cosine_warmup"]:
                 scheduler.step()
                 current_lr = scheduler.get_last_lr()[0]
                 run["learning_rate"].append(current_lr)
 
-        
-
-        ################### END OF EPOCH ###################
-
+        # --- End of Epoch ---
         avg_seg_loss = seg_loss_total / len(seg_loader)
         avg_det_loss = det_loss_total / len(det_loader)
         total_loss = avg_seg_loss + avg_det_loss
@@ -185,43 +203,43 @@ def train(args):
     if run:
         run.stop()
 
-                    
-   
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training script for segmentation and detection")
-    
-    # Dataset-related args
-    parser.add_argument('--seg_data_dir' , type =str , required=True , help="Directory where the whole segmentation dataset is stored")
-    parser.add_argument('--det_data_dir' , type =str , required=True , help="Directory where the whole detection dataset is stored")
-    parser.add_argument('--dataset_len' , type = int , default = 3000 , help="if dataset is smaller , augmentation is applied to reach this size")
-    parser.add_argument('--img_size' , type=int , default=512 , help="Size of the image")
-    
-    #Model-related args
-    parser.add_argument('--backbone' , type=str , default="SWIN" , help="SWIN OR SAM")
-    parser.add_argument('--freeze_backbone' , action='store_true' , default=True , help="if set , backbone(image encoder) will be freezed")
-    parser.add_argument('--sam_ckpt' , type=str , default=None , help="path of the image encoder checkpoint(SAM)")
-    parser.add_argument('--swin_det_ckpt' , type=str , default=None , help="path to the swin detection checkpoint")
-    parser.add_argument("--swin_seg_ckpt" , type=str , default=None , help="path to the swin segmentation path")
-    parser.add_argument('--small_patch' , type=int , default=8 , help = "Size of the small(local) patch size")
-    parser.add_argument('--large_patch' , type=int , default=16 , help = "Size of the large(global) patch size")
-    
-    #Training-related args
-    parser.add_argument('--lr' , type=float , default=1e-5 , help="Learning Rate")
-    parser.add_argument('--beta1' , type=float , default=0.9)
-    parser.add_argument('--beta2' , type=float , default=0.999)
-    parser.add_argument('--weight_decay' , type=float , default=5e-4 , help="Training Weight Decay")
-    parser.add_argument('--seg_train_batch' , type=int , required=True , help="Segmentation Training Batch Size")
-    parser.add_argument('--det_train_batch' , type=int , required=True , help="Detection Training Batch Size")
-    parser.add_argument("--val_batch" , type=int , required=True , help="Validation Batch Size")
-    parser.add_argument('--num_workers' , type=int , default=2 , help = "Number Of Workers For Data Loading")
-    parser.add_argument("--lr_scheduler", type=str , default = 'exponential' , help = "lr schedulers implemented : exponential_decay & ")
-    parser.add_argument('--epochs' , type=int , required=True , help="number of training epochs")
-    parser.add_argument('--out_dir' , type=str , required=True , help="directory to save weight file")
-    parser.add_argument('--neptune', action='store_true', help='Enable Neptune logging')
 
-    parser.add_argument('--resume_checkpoint' , type=str , default=None , help="Checkpoint to resume training from")
+    # Dataset
+    parser.add_argument('--seg_data_dir', type=str, required=True)
+    parser.add_argument('--det_data_dir', type=str, required=True)
+    parser.add_argument('--dataset_len', type=int, default=3000)
+    parser.add_argument('--img_size', type=int, default=512)
 
-    
+    # Model
+    parser.add_argument('--backbone', type=str, default="SWIN")
+    parser.add_argument('--freeze_backbone', action='store_true', default=True)
+    parser.add_argument('--sam_ckpt', type=str, default=None)
+    parser.add_argument('--swin_det_ckpt', type=str, default=None)
+    parser.add_argument('--swin_seg_ckpt', type=str, default=None)
+    parser.add_argument('--small_patch', type=int, default=8)
+    parser.add_argument('--large_patch', type=int, default=16)
+
+    # Training
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--beta1', type=float, default=0.9)
+    parser.add_argument('--beta2', type=float, default=0.999)
+    parser.add_argument('--weight_decay', type=float, default=5e-4)
+    parser.add_argument('--seg_train_batch', type=int, required=True)
+    parser.add_argument('--det_train_batch', type=int, required=True)
+    parser.add_argument('--val_batch', type=int, required=True)
+    parser.add_argument('--num_workers', type=int, default=2)
+    parser.add_argument('--lr_scheduler', type=str, default='exponential')
+    parser.add_argument('--epochs', type=int, required=True)
+    parser.add_argument('--out_dir', type=str, required=True)
+    parser.add_argument('--neptune', action='store_true')
+
+    # Checkpoints
+    parser.add_argument('--resume_checkpoint', type=str, default=None, help="Checkpoint to resume training from")
+    parser.add_argument('--validate_only_checkpoint', type=str, default=None, help="Only validate a checkpoint without training")
+
     args = parser.parse_args()
-    
+
     train(args)

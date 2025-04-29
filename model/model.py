@@ -58,6 +58,7 @@ class SegDet(nn.Module):
         self.det_head = Det_Head()
         self.upsample_local = Upsample(dim, dim, local_feat_up)
         self.upsample_det = Upsample(dim, dim, local_feat_up)
+        self.upsample_global = Upsample(dim, dim, local_feat_up)
 
         
         
@@ -67,7 +68,7 @@ class SegDet(nn.Module):
         
         local_feat_up = self.upsample_local(local_feat)
         det_feat = self.upsample_det(det_feat)
-
+        seg_feat = self.upsample_global(seg_feat)
         mask_logits, masks = self.seg_head(seg_feat, local_feat_up)
         cls_logits, bbox, centerness = self.det_head(det_feat)
 
