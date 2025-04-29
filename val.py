@@ -35,13 +35,12 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
     seg_loss_total = 0
     det_loss_total = 0
 
-    # Metrics
     iou_metric = torchmetrics.JaccardIndex(task="binary", num_classes=1).to(device)
     detection_metric = MeanAveragePrecision().to(device)
     accuracy_metric_seg = torchmetrics.classification.BinaryAccuracy().to(device)
     accuracy_metric_det = torchmetrics.classification.MulticlassAccuracy(num_classes=2).to(device)
 
-    # New metrics for bounding box IoU and object classification inside box
+
     bbox_iou_metric = torchmetrics.IoU(task="binary", num_classes=1).to(device)
     classification_correct = 0
     classification_total = 0

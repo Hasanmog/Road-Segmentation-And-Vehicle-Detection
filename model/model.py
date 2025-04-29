@@ -5,6 +5,24 @@ from model.seg_head.pred_head import Seg_Head
 from model.encoder.full_encoder import MultiScaleFusion
 
 
+
+class Upsample(nn.Module):
+    def __init__(self, in_channels, out_channels=256 , up_size = 64):
+        super().__init__()
+        self.upsample = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Upsample(size=(up_size , up_size), mode='bilinear', align_corners=False)
+        )
+
+    def forward(self, x):
+        return self.upsample(x)
+
+
+
+
+
 class SegDet(nn.Module):
     def __init__(self , 
                         img_size = 512 ,
@@ -14,7 +32,9 @@ class SegDet(nn.Module):
                         backbone_freeze = True, 
                         sam_ckpt_path = None ,
                         swin_det_path = None , 
-                        swin_seg_path = None):
+                        swin_seg_path = None,
+                        local_feat_up = 64,
+                        dim = 256):
         super().__init__()
         
         self.encoder = MultiScaleFusion(
@@ -29,30 +49,33 @@ class SegDet(nn.Module):
                                                     dim=(256, 256),
                                                     depth=(4, 4),
                                                     num_heads=(4, 4),
-                                                    mlp_ratio=(4, 4)
+                                                    mlp_ratio=(4, 4),
                                                 )
         
+        self.local_feat_up = local_feat_up
         self.seg_head = Seg_Head()
         
         self.det_head = Det_Head()
-        
+        self.upsample = Upsample(dim , dim , local_feat_up)
         
         
     def forward(self, x):
-        det_feat , seg_feat , local_feat = self.encoder(x)
+        det_feat, seg_feat, local_feat = self.encoder(x)
 
-        mask_logits , masks = self.seg_head(seg_feat , local_feat)
-        cls_logits , bbox , centerness = self.det_head(det_feat)
+        
+        local_feat_up = self.upsample(local_feat)
 
-        results = {
-            "mask_logits" : mask_logits ,
-            "masks" : masks , 
-            "cls_logits" : cls_logits , 
-            "bbox" : bbox , 
-            "centerness" : centerness     
+        mask_logits, masks = self.seg_head(seg_feat, local_feat_up)
+        cls_logits, bbox, centerness = self.det_head(det_feat)
+
+        return {
+            "mask_logits": mask_logits,
+            "masks": masks,
+            "cls_logits": cls_logits,
+            "bbox": bbox,
+            "centerness": centerness
         }
 
-        return results
 
 
         

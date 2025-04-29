@@ -44,5 +44,6 @@ cls , bbox , center = det_head(det)
 
 
 results = main_model(dummy_input)
+print(results)
 
 
