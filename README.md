@@ -1,11 +1,27 @@
-# Road Segmentation and Vehicle Detection
+# 🛣️ Road Segmentation and Vehicle Detection
 
-## Road Segmentation:
+This project tackles the combined task of **road segmentation** and **vehicle detection** using state-of-the-art deep learning models.
 
-- Massachusetts Dataset (preprocessed by us):
+## 📌 Summary
 
-Link to download the reduced road segmentation dataset: [dataset](https://filesender.renater.fr/?s=download&token=15f4f384-01c6-4f16-81ad-ed2a30233b8e)
+Due to time constraints and technical limitations, we adopted a focused strategy:
 
-- Vedai dataset
+- 🔍 **SegFormer** was fine-tuned on a custom dataset for binary road segmentation.
+- 🚗 **YOLOv8** was trained to detect vehicles such as cars and trucks.
+- 🧠 An integrated **inference script** combines both predictions into a single output:
+  - Green masks overlaying detected roads.
+  - Red bounding boxes and labels for detected vehicles.
 
-Roboflow link : [dataset](https://universe.roboflow.com/uni-project-o9mo5/vedai-tsw2j)
+## 🛠 Requirements
+
+Install all dependencies via:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Inference :
+
+```bash
+python seg_yolo_inference.py
+```
