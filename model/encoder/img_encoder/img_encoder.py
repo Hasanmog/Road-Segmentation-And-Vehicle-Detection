@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 from typing import Optional
+from . import sa_import 
 from segment_anything.modeling.image_encoder import ImageEncoderViT
 
-
-class Image_Encoders(nn.Module):
+class Image_Encoders_SAM(nn.Module):
     def __init__(self , img_size: int = 512 , 
                  in_channels: int = 3 , 
                  patch_small_size: int= 8 , 
