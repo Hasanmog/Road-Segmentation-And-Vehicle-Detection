@@ -27,15 +27,6 @@ class Seg_Head(nn.Module):
         )
 
     def forward(self, features, mask_features):
-        """
-        Args:
-            features (Tensor): [batch_size, hidden_dim, H, W]
-            mask_features (Tensor): [batch_size, hidden_dim, H, W]
-
-        Returns:
-            class_logits (Tensor): [batch_size, num_queries, 1]
-            masks (Tensor): [batch_size, num_queries, H, W]
-        """
 
         batch_size, hidden_dim, H, W = features.shape
 
@@ -50,7 +41,6 @@ class Seg_Head(nn.Module):
 
         masks = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
 
-        # Added Upsample here
         masks = F.interpolate(masks, size=(512, 512), mode='bilinear', align_corners=False)
 
         return class_logits, masks

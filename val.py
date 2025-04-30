@@ -96,7 +96,7 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
                     "labels": labels,
                 })
 
-                # Ground Truth
+                
                 boxes_gt = gt_box[b].permute(1, 2, 0).reshape(-1, 4) * stride
                 cx_gt, cy_gt, w_gt, h_gt = boxes_gt[:, 0], boxes_gt[:, 1], boxes_gt[:, 2], boxes_gt[:, 3]
                 x1_gt = cx_gt - w_gt / 2

@@ -46,9 +46,9 @@ def lr_scheduler(optimizer, scheduler: str, **kwargs):
     elif scheduler == "cosine_warmup":
         return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer,
-            T_0=kwargs.get("T_0", 10),        # Number of iterations for the first restart
-            T_mult=kwargs.get("T_mult", 2),    # Multiply T_0 by this after each restart
-            eta_min=kwargs.get("eta_min", 0)   # Minimum LR
+            T_0=kwargs.get("T_0", 10),       
+            T_mult=kwargs.get("T_mult", 2),    
+            eta_min=kwargs.get("eta_min", 0)   
         )
     elif scheduler == "reduce_on_plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(

@@ -7,7 +7,7 @@ from PIL import Image
 import argparse
 from model.model import SegDet
 
-# Helper Functions
+
 def plot_segmentation(img, pred_mask):
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
@@ -39,7 +39,7 @@ def plot_detection(img, boxes, scores, labels, score_thresh=0.5):
 def main(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Load Image
+
     image = Image.open(args.image_path).convert('RGB')
     transform = transforms.Compose([
         transforms.Resize((args.img_size, args.img_size)),
@@ -47,7 +47,7 @@ def main(args):
     ])
     img = transform(image).unsqueeze(0).to(device)
 
-    # Load Model
+
     model = SegDet(
         img_size=args.img_size,
         small_patch_size=args.small_patch,
@@ -66,7 +66,7 @@ def main(args):
     with torch.no_grad(), torch.cuda.amp.autocast():
         output = model(img)
 
-    # ---- Segmentation Visualization ----
+
     class_logits = output["mask_logits"]
     masks = output["masks"]
 
@@ -76,12 +76,12 @@ def main(args):
 
     plot_segmentation(img.squeeze(0), selected_masks.squeeze(0) > 0.5)
 
-    # ---- Detection Visualization ----
+
     pred_box = output["bbox"][0]
     pred_label = output["cls_logits"][0]
     pred_center = output["centerness"][0]
 
-    stride = (args.img_size // 8)  # 512/8 = 64 if you use that setting
+    stride = (args.img_size // 8)
 
     boxes = pred_box.permute(1, 2, 0).reshape(-1, 4) * stride
     scores = pred_center.permute(1, 2, 0).reshape(-1)
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to model checkpoint (.pt)')
     parser.add_argument('--image_path', type=str, required=True, help='Path to your input image')
 
-    # Model configs
+
     parser.add_argument('--img_size', type=int, default=512)
     parser.add_argument('--small_patch', type=int, default=8)
     parser.add_argument('--large_patch', type=int, default=16)

@@ -26,13 +26,13 @@ def train(args):
 
 
     seg_dataset = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='train', img_size=args.img_size, target_len=args.dataset_len)
-    det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="train", img_size=args.img_size, target_len=len(seg_dataset), grid_size=64)
+    det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="train", img_size=args.img_size, target_len=len(seg_dataset), grid_size=args.upsample_up)
 
     seg_loader = DataLoader(seg_dataset, batch_size=args.seg_train_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
     det_loader = DataLoader(det_dataset, batch_size=args.det_train_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
 
     seg_val = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='val', img_size=args.img_size)
-    det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=64)
+    det_val = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="val", img_size=args.img_size, grid_size=args.upsample_up)
 
     seg_val_loader = DataLoader(seg_val, batch_size=args.val_batch, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
     det_val_loader = DataLoader(det_val, batch_size=args.val_batch, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True)
@@ -50,7 +50,8 @@ def train(args):
         sam_ckpt_path=args.sam_ckpt,
         swin_det_path=args.swin_det_ckpt,
         swin_seg_path=args.swin_seg_ckpt,
-        backbone_freeze=args.freeze_backbone
+        backbone_freeze=args.freeze_backbone,
+        local_feat_up = args.upsample_size , 
     )
     model.to(device)
 
@@ -66,7 +67,7 @@ def train(args):
     start_epoch = 0
     saving_loss = float('inf')
 
-    # -------------------- Load checkpoint if any --------------------
+
     if args.resume_checkpoint:
         checkpoint = torch.load(args.resume_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state'])
@@ -86,7 +87,7 @@ def train(args):
             run.stop()
         return
 
-    # -------------------- Normal training loop --------------------
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Training {trainable_params:,} out of {total_params:,} parameters ({100 * trainable_params / total_params:.2f}%)")
@@ -97,7 +98,7 @@ def train(args):
         seg_loss_total = 0
         det_loss_total = 0
 
-        # --- Segmentation Phase ---
+
         for seg_batch in tqdm(seg_loader, desc=f"Epoch {epoch+1} - Segmentation Phase"):
             seg_img, mask = seg_batch
             seg_img, gt_mask = seg_img.to(device), mask.to(device)
@@ -133,7 +134,7 @@ def train(args):
                     current_lr = scheduler.get_last_lr()[0]
                     run["learning_rate"].append(current_lr)
 
-        # --- Detection Phase ---
+
         for det_batch in tqdm(det_loader, desc=f"Epoch {epoch+1} - Detection Phase"):
             det_img, target = det_batch
             det_img = det_img.to(device)
@@ -174,7 +175,7 @@ def train(args):
                 current_lr = scheduler.get_last_lr()[0]
                 run["learning_rate"].append(current_lr)
 
-        # --- End of Epoch ---
+
         avg_seg_loss = seg_loss_total / len(seg_loader)
         avg_det_loss = det_loss_total / len(det_loader)
         total_loss = avg_seg_loss + avg_det_loss
@@ -221,6 +222,7 @@ if __name__ == "__main__":
     parser.add_argument('--swin_seg_ckpt', type=str, default=None)
     parser.add_argument('--small_patch', type=int, default=8)
     parser.add_argument('--large_patch', type=int, default=16)
+    parser.add_argument('--upsample_size' , type=int , default=64)
 
     # Training
     parser.add_argument('--lr', type=float, default=1e-5)
