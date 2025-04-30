@@ -1,4 +1,8 @@
 **/__pycache__
 **/weights
 Encoder/img_encoder/12.png 
-
+SegFormer/checkpoints
+Yolo/runs
+yolo11n.pt
+yolov8n.pt
+results
