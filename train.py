@@ -24,7 +24,7 @@ def train(args):
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Data loaders
+
     seg_dataset = RoadSegDataset(dataset_dir=args.seg_data_dir, mode='train', img_size=args.img_size, target_len=args.dataset_len)
     det_dataset = VehicleDetDataset(dataset_dir=args.det_data_dir, mode="train", img_size=args.img_size, target_len=len(seg_dataset), grid_size=64)
 

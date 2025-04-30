@@ -42,7 +42,7 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
         gt_center = target["centerness"].to(device)
 
         with torch.autocast(device_type=device):
-            # ---- Segmentation Part ----
+            #Segmentation
             output = model(seg_img)
             class_logits = output["mask_logits"]
             masks = output["masks"]
@@ -59,7 +59,7 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
             iou_metric.update(preds.int(), gt_mask.int())
             accuracy_metric_seg.update(preds.int(), gt_mask.int())
 
-            # ---- Detection Part ----
+            # Detection
             output = model(det_img)
             pred_box = output["bbox"]
             pred_label = output["cls_logits"]
@@ -96,7 +96,7 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
                     "labels": labels,
                 })
 
-                # Ground truth
+                # Ground Truth
                 boxes_gt = gt_box[b].permute(1, 2, 0).reshape(-1, 4) * stride
                 cx_gt, cy_gt, w_gt, h_gt = boxes_gt[:, 0], boxes_gt[:, 1], boxes_gt[:, 2], boxes_gt[:, 3]
                 x1_gt = cx_gt - w_gt / 2
@@ -112,10 +112,10 @@ def validate_one_epoch(model, seg_loader, det_loader, device, run=None, args=Non
                     "labels": labels_gt,
                 })
 
-                # Calculate bbox IoU manually
+                
                 if len(boxes) > 0 and len(boxes_gt) > 0:
-                    ious = box_iou(boxes, boxes_gt)  # [num_pred, num_gt]
-                    max_ious, max_indices = ious.max(dim=1)  # for each pred, best GT
+                    ious = box_iou(boxes, boxes_gt)  
+                    max_ious, max_indices = ious.max(dim=1) 
                     bbox_ious.extend(max_ious.tolist())
 
                     for pred_idx in range(boxes.size(0)):
