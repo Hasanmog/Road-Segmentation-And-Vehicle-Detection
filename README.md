@@ -72,11 +72,5 @@ Check the `train.py` script for more arguments.
 NEPTUNE_API_KEY = 'your_access_token'
 ```
 
-## 🚨 In a Rush or Facing Hardware Limits?
-
-We've got your back!  
-Check out the `backup-approach` branch for SegFormer + YOLOv8 🛠️
-
-
 ##
 > While some components of this work may still contain bugs or deliver suboptimal results due to time and task constraints, this project lays the foundation for a promising research direction. It is designed with modularity in mind, leaving room for continued development, debugging, and future contributions.
